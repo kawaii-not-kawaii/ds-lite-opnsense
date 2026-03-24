@@ -61,6 +61,8 @@ cd ds-lite-opnsense/os-dslite-hb46pp  # or os-dslite for main branch
 ./deploy.sh <opnsense-ip>
 ```
 
+**Important:** After installing the plugin, you need to **reboot OPNsense** for the DS-Lite menu to appear under Interfaces.
+
 ## Prerequisites
 
 1. **WAN interface** (connected to NTT ONT)
