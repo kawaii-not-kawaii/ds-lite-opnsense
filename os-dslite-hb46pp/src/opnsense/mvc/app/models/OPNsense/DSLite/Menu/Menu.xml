@@ -1,0 +1,8 @@
+<menu>
+    <Interfaces>
+        <DSLite cssClass="fa fa-exchange fa-fw" VisibleName="DS-Lite">
+            <Settings order="10" url="/ui/dslite/general"/>
+            <Diagnostics order="20" url="/ui/dslite/diagnostics"/>
+        </DSLite>
+    </Interfaces>
+</menu>

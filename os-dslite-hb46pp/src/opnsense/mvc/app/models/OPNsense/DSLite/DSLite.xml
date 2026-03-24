@@ -1,0 +1,90 @@
+<model>
+    <mount>//OPNsense/dslite</mount>
+    <description>DS-Lite / Fixed IP tunnel with HB46PP auto-provisioning</description>
+    <version>2.1.0</version>
+    <items>
+        <enabled type="BooleanField">
+            <Default>0</Default>
+            <Required>Y</Required>
+        </enabled>
+        <mode type="OptionField">
+            <Default>fixedip</Default>
+            <Required>Y</Required>
+            <OptionValues>
+                <fixedip>Fixed IP (IPv4 over IPv6 IPIP)</fixedip>
+                <dslite>DS-Lite (Shared IPv4 / CG-NAT)</dslite>
+            </OptionValues>
+        </mode>
+        <wan_interface type="InterfaceField">
+            <Required>Y</Required>
+            <AllowDynamic>1</AllowDynamic>
+            <filters>
+                <enable>/^1$/</enable>
+            </filters>
+        </wan_interface>
+        <hb46pp_user type="TextField">
+            <Required>N</Required>
+        </hb46pp_user>
+        <hb46pp_pass type="TextField">
+            <Required>N</Required>
+        </hb46pp_pass>
+        <isp_profile type="OptionField">
+            <Default>auto</Default>
+            <Required>Y</Required>
+            <OptionValues>
+                <auto>Auto-detect</auto>
+                <transix>Transix (Internet Multifeed)</transix>
+                <xpass>Xpass (ARTERIA Networks)</xpass>
+                <v6connect>v6 Connect (Asahi Net)</v6connect>
+                <custom>Custom</custom>
+            </OptionValues>
+        </isp_profile>
+        <aftr_address type="NetworkField">
+            <Required>N</Required>
+            <NetMaskAllowed>N</NetMaskAllowed>
+            <AddressFamily>IPv6</AddressFamily>
+        </aftr_address>
+        <aftr_hostname type="HostnameField">
+            <Required>N</Required>
+        </aftr_hostname>
+        <b4_address type="NetworkField">
+            <Default>192.0.0.2</Default>
+            <Required>Y</Required>
+            <NetMaskAllowed>N</NetMaskAllowed>
+            <AddressFamily>IPv4</AddressFamily>
+        </b4_address>
+        <aftr_v4_address type="NetworkField">
+            <Default>192.0.0.1</Default>
+            <Required>Y</Required>
+            <NetMaskAllowed>N</NetMaskAllowed>
+            <AddressFamily>IPv4</AddressFamily>
+        </aftr_v4_address>
+        <mtu type="IntegerField">
+            <Default>1460</Default>
+            <Required>Y</Required>
+            <MinimumValue>1280</MinimumValue>
+            <MaximumValue>9000</MaximumValue>
+        </mtu>
+        <mss_clamp type="IntegerField">
+            <Default>1420</Default>
+            <Required>Y</Required>
+            <MinimumValue>536</MinimumValue>
+            <MaximumValue>8960</MaximumValue>
+        </mss_clamp>
+        <nat_enabled type="BooleanField">
+            <Default>1</Default>
+            <Required>Y</Required>
+        </nat_enabled>
+        <fixedip_interface_id type="TextField">
+            <Required>N</Required>
+        </fixedip_interface_id>
+        <fixedip_aftr type="TextField">
+            <Required>N</Required>
+        </fixedip_aftr>
+        <fixedip_v4 type="NetworkField">
+            <Required>N</Required>
+            <NetMaskAllowed>N</NetMaskAllowed>
+            <AddressFamily>IPv4</AddressFamily>
+        </fixedip_v4>
+    </items>
+</model>

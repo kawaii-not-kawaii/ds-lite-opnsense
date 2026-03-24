@@ -1,0 +1,109 @@
+<form>
+    <field>
+        <id>dslite.enabled</id>
+        <label>Enable</label>
+        <type>checkbox</type>
+        <help>Enable the IPv4 over IPv6 tunnel.</help>
+    </field>
+    <field>
+        <id>dslite.mode</id>
+        <label>Connection Type</label>
+        <type>dropdown</type>
+        <help>Fixed IP gives you a dedicated public IPv4 address. DS-Lite uses shared IPv4 via CG-NAT.</help>
+    </field>
+    <field>
+        <id>dslite.wan_interface</id>
+        <label>WAN Interface</label>
+        <type>dropdown</type>
+        <help>Select the WAN interface with IPv6 connectivity (DHCPv6).</help>
+    </field>
+    <field>
+        <id>dslite.hb46pp_user</id>
+        <label>Provisioning User ID</label>
+        <type>text</type>
+        <help>Auto-provisioning user ID from your ISP (e.g., P12345678). Leave empty if not required by your ISP.</help>
+    </field>
+    <field>
+        <id>dslite.hb46pp_pass</id>
+        <label>Provisioning Password</label>
+        <type>password</type>
+        <help>Auto-provisioning password from your ISP.</help>
+    </field>
+    <field>
+        <id>dslite.isp_profile</id>
+        <label>ISP Profile</label>
+        <type>dropdown</type>
+        <help>Manually select your ISP for AFTR address. Only used when auto-provisioning is unavailable.</help>
+        <advanced>true</advanced>
+    </field>
+    <field>
+        <id>dslite.aftr_hostname</id>
+        <label>AFTR Hostname</label>
+        <type>text</type>
+        <help>Manual AFTR hostname override.</help>
+        <advanced>true</advanced>
+    </field>
+    <field>
+        <id>dslite.aftr_address</id>
+        <label>AFTR IPv6 Address</label>
+        <type>text</type>
+        <help>Manual AFTR IPv6 address override.</help>
+        <advanced>true</advanced>
+    </field>
+    <field>
+        <id>dslite.fixedip_interface_id</id>
+        <label>Interface ID (IPv6)</label>
+        <type>text</type>
+        <help>Manual Interface ID override for Fixed IP mode.</help>
+        <advanced>true</advanced>
+    </field>
+    <field>
+        <id>dslite.fixedip_aftr</id>
+        <label>AFTR Endpoint (IPv6)</label>
+        <type>text</type>
+        <help>Manual AFTR endpoint override for Fixed IP mode.</help>
+        <advanced>true</advanced>
+    </field>
+    <field>
+        <id>dslite.fixedip_v4</id>
+        <label>Fixed IPv4 Address</label>
+        <type>text</type>
+        <help>Manual fixed IPv4 address override.</help>
+        <advanced>true</advanced>
+    </field>
+    <field>
+        <id>dslite.b4_address</id>
+        <label>B4 IPv4 Address</label>
+        <type>text</type>
+        <help>DS-Lite local tunnel IPv4 (default: 192.0.0.2).</help>
+        <advanced>true</advanced>
+    </field>
+    <field>
+        <id>dslite.aftr_v4_address</id>
+        <label>AFTR IPv4 Address</label>
+        <type>text</type>
+        <help>DS-Lite remote tunnel IPv4 (default: 192.0.0.1).</help>
+        <advanced>true</advanced>
+    </field>
+    <field>
+        <id>dslite.mtu</id>
+        <label>MTU</label>
+        <type>text</type>
+        <help>Tunnel MTU (default: 1460).</help>
+        <advanced>true</advanced>
+    </field>
+    <field>
+        <id>dslite.mss_clamp</id>
+        <label>TCP MSS Clamp</label>
+        <type>text</type>
+        <help>TCP MSS clamping value (default: 1420).</help>
+        <advanced>true</advanced>
+    </field>
+    <field>
+        <id>dslite.nat_enabled</id>
+        <label>Enable NAT</label>
+        <type>checkbox</type>
+        <help>Enable IPv4 NAT on the tunnel interface.</help>
+        <advanced>true</advanced>
+    </field>
+</form>

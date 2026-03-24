@@ -1,0 +1,10 @@
+<acl>
+    <page-dslite-config>
+        <name>Interfaces: DS-Lite</name>
+        <patterns>
+            <pattern>ui/dslite/*</pattern>
+            <pattern>api/dslite/settings/*</pattern>
+            <pattern>api/dslite/service/*</pattern>
+        </patterns>
+    </page-dslite-config>
+</acl>

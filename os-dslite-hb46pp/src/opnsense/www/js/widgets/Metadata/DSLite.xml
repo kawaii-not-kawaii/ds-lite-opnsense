@@ -1,0 +1,22 @@
+<metadata>
+    <dslite>
+        <filename>DSLite.js</filename>
+        <link>/ui/dslite/general</link>
+        <endpoints>
+            <endpoint>/api/dslite/service/status</endpoint>
+        </endpoints>
+        <translations>
+            <title>DS-Lite Tunnel</title>
+            <unconfigured>DS-Lite is not configured. Click to set up.</unconfigured>
+            <disabled>DS-Lite is disabled.</disabled>
+            <connected>Connected</connected>
+            <tunnelup>Tunnel Up</tunnelup>
+            <tunneldown>Tunnel Down</tunneldown>
+            <nointernet>No Internet</nointernet>
+            <localv6>Local IPv6</localv6>
+            <aftr>AFTR</aftr>
+            <ipv4>IPv4</ipv4>
+            <mtu>MTU</mtu>
+        </translations>
+    </dslite>
+</metadata>
