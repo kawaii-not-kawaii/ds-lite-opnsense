@@ -7,7 +7,7 @@
 
 set -e
 
-PLUGIN_URL="https://github.com/kawaii-not-kawaii/ds-lite-opnsense/archive/refs/heads/main.tar.gz"
+PLUGIN_URL="https://github.com/kawaii-not-kawaii/ds-lite-opnsense/archive/refs/heads/hb46pp.tar.gz"
 TMP_DIR="/tmp/dslite-install"
 
 echo "=== OPNsense DS-Lite Plugin Installer ==="
@@ -36,6 +36,17 @@ fi
 
 echo "Extracting..."
 tar -xzf "${TMP_DIR}/plugin.tar.gz" -C "${TMP_DIR}" --strip-components=3
+
+# Verify extraction
+if [ ! -d "${TMP_DIR}/opnsense" ]; then
+    echo "ERROR: Extraction failed. Retrying with different strip level..."
+    rm -rf "${TMP_DIR}/opnsense" "${TMP_DIR}/etc"
+    tar -xzf "${TMP_DIR}/plugin.tar.gz" -C "${TMP_DIR}" --strip-components=4
+fi
+if [ ! -d "${TMP_DIR}/opnsense" ]; then
+    echo "ERROR: Could not extract plugin files."
+    exit 1
+fi
 
 echo "Installing plugin files..."
 SRC="${TMP_DIR}"
