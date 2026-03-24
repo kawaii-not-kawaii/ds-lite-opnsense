@@ -34,7 +34,7 @@ Any ISP using the [HB46PP standard provisioning protocol](https://github.com/v6p
 
 - **Asahi Net** (asahi-net.jp) + NTT West Flets Hikari Cross (10G plan)
 - OPNsense 25.1 and 26.1.4 (FreeBSD 14.2)
-- Fixed IP: `x.x.x.x` — inbound port forwarding verified
+- Fixed IP: inbound port forwarding verified
 - Performance: 1.89 Gbps (iperf3 8-stream) through DS-Lite tunnel
 
 ## Installation
