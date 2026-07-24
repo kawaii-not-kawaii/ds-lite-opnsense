@@ -623,3 +623,47 @@ After the P0 and P1 items are corrected, validate the complete story on an isola
 7. Package upgrade while enabled and while disabled.
 8. Package uninstall with an unrelated default route and unrelated GIF interface present.
 9. Dashboard and diagnostics behavior under healthy, degraded, offline, high-latency, and provider-error conditions.
+10. Tunnel-interface collision: create an unrelated GIF on the configured unit, apply, and confirm the plugin refuses rather than taking it over; then point it at a free unit and confirm it comes up.
+
+### MAP-E validation
+
+MAP-E was added after this review. Its arithmetic is verified against RFC 7597's
+worked example and the published v6plus parameters, but three things cannot be
+checked off-appliance.
+
+11. **`map-e-portset` availability.** The one item that gates everything else, because pf is what actually confines the source ports.
+
+    ```sh
+    printf 'nat on lo0 from any to any -> 192.0.2.1 map-e-portset 6/8/0\n' | pfctl -n -f -
+    echo "rc=$?"   # 0 = supported
+    ```
+
+    Non-zero means this base lacks the RFC 7597 NAT port selection from FreeBSD
+    D29468. `configure.sh` runs exactly this probe and refuses to build a tunnel
+    when it fails, so the expected behavior on an unsupported base is a clean
+    refusal in the log, not a half-working tunnel. Confirm which it is, and
+    record the OPNsense/FreeBSD version alongside the result.
+
+12. **Derived values against the line.** Compare what the plugin computes with what the ISP actually assigned:
+
+    ```sh
+    configctl dslite status          # ipv4 and the MAP-E line in the log
+    grep 'MAP-E mode' /var/log/dslite/latest.log
+    ```
+
+    The derived IPv4 must equal the address the ISP assigned. A mismatch means
+    the configured mapping rule is wrong for this prefix — not a bug in the
+    derivation, which refuses outright when the prefix falls outside the rule.
+
+13. **Port set actually enforced.** The failure this guards against is silent: traffic leaves, the BR drops it, and it looks like a routing fault.
+
+    ```sh
+    pfctl -a dslite/nat -s nat       # rule should carry map-e-portset a/k/psid
+    pfctl -s state | grep <derived-ipv4>
+    ```
+
+    Every translated source port must fall inside the derived set. With the
+    v6plus example (offset 4, PSID length 8) that is 15 ranges of 16 ports, none
+    below 1024. A port outside the set is the defect to look for.
+
+14. **MAP-E to DS-Lite mode transition**, confirming the managed CE `/128` alias and the `map-e-portset` nat rule are both withdrawn.
