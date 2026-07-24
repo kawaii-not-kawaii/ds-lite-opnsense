@@ -7,6 +7,7 @@ OPNsense plugin for Japanese ISP IPv4-over-IPv6 tunneling. Supports both **DS-Li
 - **HB46PP Auto-Provisioning** — just enter your ISP credentials, everything else is automatic
 - **Fixed IP (IPIP)** — dedicated public IPv4 with inbound port forwarding
 - **DS-Lite** — shared IPv4 via CG-NAT, auto-detected from prefix
+- **MAP-E (experimental)** — RFC 7597 address/port derivation with a real pf `map-e-portset` NAT rule
 - **Dashboard widget** — real-time tunnel status and health on the OPNsense lobby
 - **Health status & diagnostics** — composite HEALTHY/degraded state plus a structured endpoint-check panel (route, DNS, CE→AFTR, v4/v6 Internet, MTU/fragmentation, prefix update)
 - **Auto-reconfigure on prefix change** — rebuilds the tunnel on IPv6 (PD) renewal, not just at boot
@@ -200,6 +201,50 @@ Tested on Proxmox VM (4 cores, 4GB RAM) with an Intel **I226-V 2.5GbE** NIC:
 > different hardware, so treat it as an existence proof that the `gif` path can go
 > past 2.5G, not as a prediction for this plugin on your box. DS-Lite throughput is
 > additionally bounded by the VNE's shared AFTR.
+
+## MAP-E (experimental)
+
+MAP-E derives your public IPv4 address **and a restricted set of source ports**
+from the delegated IPv6 prefix. The Border Relay identifies your CE by that port
+set, so NAT must translate only into it — pf does this natively via
+`map-e-portset <psid-offset>/<psid-len>/<psid>`, and the plugin refuses to start
+if the running pf lacks that option rather than bringing up a tunnel that looks
+healthy and silently gets dropped.
+
+Given a Basic Mapping Rule the plugin computes, per RFC 7597 §5:
+
+```
+EA bits   = bits [n, n+o) of the delegated prefix
+IPv4      = rule IPv4 prefix | (EA >> k)          p = min(32-r, o)
+PSID      = EA & ((1<<k)-1)                       k = o - p
+CE IPv6   = <prefix>::0:<IPv4>:<PSID>             (RFC 7597 §6)
+port set  = A(a bits) | PSID(k bits) | j(m bits)  m = 16-a-k, j>0
+```
+
+### Configuring it
+
+| Field | Source |
+|---|---|
+| Profile | Fills in the values constant across a service — currently `v6plus` (BR `2404:9200:225:100::64`, PSID offset **4**, not the RFC default of 6) |
+| Rule IPv6 / IPv4 prefix, EA-bits length | **Per-subscriber — you must supply these** |
+
+> **Why there is no rule table.** The VNEs do not publish their mapping rules;
+> operators hold them internally, and the values circulating in community
+> write-ups are one subscriber's rule rather than a table. A wrong rule puts
+> your source ports outside the assigned set, the BR drops the traffic, and it
+> presents as a routing fault. So the plugin ships only genuinely service-wide
+> constants, and **refuses to start when your delegated prefix does not fall
+> inside the configured rule** instead of guessing.
+
+> **OCN Virtual Connect will not work with a static rule.** Its MAP rules are
+> issued by a provisioning server and change; Yamaha's documentation states they
+> cannot be fixed in configuration. That needs the v6mig `map_e` client, which
+> belongs on the `hb46pp` branch. `v6plus`-style services, whose rules are static
+> per prefix, work here today.
+
+Untested against a live MAP-E line — the derivation is verified against RFC 7597's
+own worked example and the published v6plus parameters, but the pf rule itself has
+only been checked for syntax.
 
 ## Health Status & Diagnostics
 

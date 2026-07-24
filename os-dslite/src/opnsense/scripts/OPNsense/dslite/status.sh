@@ -94,8 +94,9 @@ if tunnel_exists; then
         append_failure "mtu"
     fi
 
-    # 4) WAN /128 alias presence (Fixed IP only)
-    if [ "${MODE}" = "fixedip" ]; then
+    # 4) WAN /128 alias presence. Fixed IP puts the tunnel-local address there,
+    #    MAP-E puts the derived CE address there; DS-Lite uses a native one.
+    if [ "${MODE}" = "fixedip" ] || [ "${MODE}" = "mape" ]; then
         wan_if_device=$(get_wan_if_device)
         if [ -n "${ce_source}" ] && [ -n "${wan_if_device}" ] && ifconfig "${wan_if_device}" >/dev/null 2>&1; then
             iface_has_v6 "${wan_if_device}" "${ce_source}" || append_failure "wan_alias"

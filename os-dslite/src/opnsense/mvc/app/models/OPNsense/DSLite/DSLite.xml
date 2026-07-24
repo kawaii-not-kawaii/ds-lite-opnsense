@@ -13,6 +13,7 @@
             <OptionValues>
                 <dslite>DS-Lite (Shared IPv4 / CG-NAT)</dslite>
                 <fixedip>Fixed IP (IPv4 over IPv6 IPIP)</fixedip>
+                <mape>MAP-E (experimental)</mape>
             </OptionValues>
         </mode>
         <isp_profile type="OptionField">
@@ -113,5 +114,48 @@
             <Default>0</Default>
             <Required>Y</Required>
         </fixedip_allow_insecure>
+        <!--
+            MAP-E (RFC 7597), experimental.
+
+            A profile supplies only what is constant across an entire service
+            (the BR address and the PSID offset). The Basic Mapping Rule below
+            is per-subscriber: the VNEs do not publish their rule sets, so these
+            cannot be shipped as a table and must come from the operator or from
+            a rule calculator. Field names mirror the v6mig map_e schema so a
+            provisioning client can populate them without a config migration.
+        -->
+        <mape_profile type="OptionField">
+            <Default>custom</Default>
+            <Required>N</Required>
+            <OptionValues>
+                <custom>Custom (enter all values)</custom>
+                <v6plus>v6plus / JPNE</v6plus>
+            </OptionValues>
+        </mape_profile>
+        <mape_br type="TextField">
+            <Required>N</Required>
+            <Mask>/^[0-9a-fA-F:]*$/</Mask>
+            <ValidationMessage>Must be the BR IPv6 address.</ValidationMessage>
+        </mape_br>
+        <mape_rule_ipv6 type="TextField">
+            <Required>N</Required>
+            <Mask>/^([0-9a-fA-F:]+\/[0-9]{1,3})?$/</Mask>
+            <ValidationMessage>Must be an IPv6 prefix in CIDR form, for example 240b:10::/31.</ValidationMessage>
+        </mape_rule_ipv6>
+        <mape_rule_ipv4 type="TextField">
+            <Required>N</Required>
+            <Mask>/^([0-9.]+\/[0-9]{1,2})?$/</Mask>
+            <ValidationMessage>Must be an IPv4 prefix in CIDR form, for example 106.72.0.0/15.</ValidationMessage>
+        </mape_rule_ipv4>
+        <mape_ea_length type="IntegerField">
+            <Required>N</Required>
+            <MinimumValue>0</MinimumValue>
+            <MaximumValue>48</MaximumValue>
+        </mape_ea_length>
+        <mape_psid_offset type="IntegerField">
+            <Required>N</Required>
+            <MinimumValue>0</MinimumValue>
+            <MaximumValue>16</MaximumValue>
+        </mape_psid_offset>
     </items>
 </model>

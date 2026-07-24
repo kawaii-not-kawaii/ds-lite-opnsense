@@ -46,6 +46,124 @@ AFTR_MAP="
 2404:8e01::/32|2404:8e00::feed:101
 "
 
+# ---------------------------------------------------------------------------
+# MAP-E (RFC 7597) -- EXPERIMENTAL
+#
+# Service-wide constants only. The per-subscriber Basic Mapping Rule (the rule
+# IPv6/IPv4 prefixes and the EA-bits length) differs per assigned prefix and is
+# NOT published by the VNEs -- operators hold it internally, and the values in
+# community write-ups are one subscriber's rule, not a table. Shipping a guessed
+# mapping would put the CE's source ports outside its assigned port set, which
+# the BR silently drops and which presents as a routing fault. So only values
+# that genuinely apply to the whole service live here.
+#
+# Format: profile|br_ipv6|psid_offset
+MAPE_PROFILES="
+v6plus|2404:9200:225:100::64|4
+"
+
+# Look up a MAP-E profile. Sets MAPE_P_BR and MAPE_P_OFFSET.
+# Uses a temp file rather than a pipe: a piped while-loop runs in a subshell,
+# so assignments to the caller's variables would be lost (same reason
+# detect_aftr_from_prefix does this).
+mape_profile_lookup() {
+    local want="$1" name br offset tmpfile
+    MAPE_P_BR=""
+    MAPE_P_OFFSET=""
+    [ -n "${want}" ] || return 1
+
+    tmpfile="/tmp/dslite_mape_profiles.tmp"
+    printf '%s\n' "${MAPE_PROFILES}" > "${tmpfile}"
+    while IFS='|' read -r name br offset; do
+        [ -n "${name}" ] || continue
+        if [ "${name}" = "${want}" ]; then
+            MAPE_P_BR="${br}"
+            MAPE_P_OFFSET="${offset}"
+            break
+        fi
+    done < "${tmpfile}"
+    rm -f "${tmpfile}"
+
+    [ -n "${MAPE_P_BR}" ]
+}
+
+# Does this pf support MAP-E port sets? Parse-only, nothing is loaded.
+# Without it a nat rule would translate to ports outside our assigned set and
+# the BR would drop the traffic, so this must fail loudly rather than degrade.
+mape_pf_supported() {
+    printf 'nat on lo0 from any to any -> 192.0.2.1 map-e-portset 6/8/0\n' \
+        | pfctl -n -f - >/dev/null 2>&1
+}
+
+# Derive the MAP-E parameters for this CE from its delegated prefix and the BMR.
+# Usage: mape_derive <pd_prefix> <rule_ipv6> <rule_ipv4> <ea_length> <psid_offset>
+# Prints: "<ipv4> <psid> <psid_len> <ce_ipv6> <port_ranges> <ports_total>"
+# Returns non-zero when the prefix does not fall inside the rule, which is the
+# safety property that lets an incomplete profile set fail cleanly instead of
+# producing a plausible but wrong port set.
+mape_derive() {
+    command -v python3 >/dev/null 2>&1 || return 1
+    python3 - "$1" "$2" "$3" "$4" "$5" <<'PYEOF' 2>/dev/null
+import sys, ipaddress
+
+pd_s, rule6_s, rule4_s, ea_s, off_s = sys.argv[1:6]
+
+pd = ipaddress.ip_network(pd_s, strict=False)
+rule6 = ipaddress.ip_network(rule6_s, strict=False)
+rule4 = ipaddress.ip_network(rule4_s, strict=False)
+o = int(ea_s)            # EA-bits length
+a = int(off_s)           # PSID offset
+
+n = rule6.prefixlen      # rule IPv6 prefix length
+r = rule4.prefixlen      # rule IPv4 prefix length
+
+# The delegated prefix must sit inside the rule prefix and be long enough to
+# carry the EA bits, otherwise this rule simply does not describe this CE.
+if not (pd.network_address in rule6 and pd.prefixlen >= n + o):
+    sys.exit(1)
+if not (0 <= o <= 48 and 0 <= a <= 16):
+    sys.exit(1)
+
+# EA bits sit immediately after the rule prefix (RFC 7597 s5.2).
+ea = (int(pd.network_address) >> (128 - n - o)) & ((1 << o) - 1)
+
+p = min(32 - r, o)       # IPv4 suffix bits carried in the EA field
+k = o - p                # PSID bits
+if k < 0 or a + k > 16:
+    sys.exit(1)
+
+ipv4 = ipaddress.IPv4Address(int(rule4.network_address) | (ea >> k))
+psid = ea & ((1 << k) - 1)
+
+# MAP CE address (RFC 7597 s6): interface identifier is
+# 16 zero bits | the IPv4 address | the PSID.
+iid = (int(ipv4) << 16) | psid
+ce = ipaddress.IPv6Address((int(pd.network_address) >> 64 << 64) | iid)
+
+# Port set: ports are A(a bits) | PSID(k bits) | j(m bits). j=0 is skipped so
+# the well-known ports stay out of every CE's set.
+m = 16 - a - k
+ranges = (1 << a) - 1 if a > 0 else 1
+total = ranges * (1 << m)
+
+print("%s %d %d %s %d %d" % (ipv4, psid, k, ce, ranges, total))
+PYEOF
+}
+
+# Emit the contiguous port ranges of a MAP-E port set, one "start end" per line.
+# Used for reporting; pf derives the same set itself from map-e-portset.
+mape_port_ranges() {
+    command -v python3 >/dev/null 2>&1 || return 1
+    python3 - "$1" "$2" "$3" <<'PYEOF' 2>/dev/null
+import sys
+a, k, psid = int(sys.argv[1]), int(sys.argv[2]), int(sys.argv[3])
+m = 16 - a - k
+for j in range(1 if a > 0 else 0, 1 << a):
+    start = (j << (16 - a)) | (psid << m)
+    print("%d %d" % (start, start + (1 << m) - 1))
+PYEOF
+}
+
 # Read a value from the OPNsense config XML
 # Usage: config_get "xpath"
 config_get() {
@@ -332,11 +450,26 @@ get_mode() {
 # In Fixed IP mode this comes from the member-specific field, otherwise from
 # the AFTR discovery chain already run by get_config().
 get_expected_aftr() {
-    if [ "$(get_mode)" = "fixedip" ]; then
-        config_get "//OPNsense/dslite/fixedip_aftr"
-    else
-        printf '%s' "${AFTR_ADDRESS}"
-    fi
+    local mode br
+    mode=$(get_mode)
+    case "${mode}" in
+        fixedip)
+            config_get "//OPNsense/dslite/fixedip_aftr"
+            ;;
+        mape)
+            br=$(config_get "//OPNsense/dslite/mape_br")
+            if [ -z "${br}" ]; then
+                # Fall back to the profile's BR when the field is left blank.
+                if mape_profile_lookup "$(config_get "//OPNsense/dslite/mape_profile")"; then
+                    br="${MAPE_P_BR}"
+                fi
+            fi
+            printf '%s' "${br}"
+            ;;
+        *)
+            printf '%s' "${AFTR_ADDRESS}"
+            ;;
+    esac
 }
 
 # ---------------------------------------------------------------------------

@@ -16,7 +16,6 @@ SCRIPT_DIR=$(dirname "$0")
 get_config
 
 MODE=$(get_mode)
-FIXEDIP_AFTR=$(config_get "//OPNsense/dslite/fixedip_aftr")
 FIXEDIP_UPDATE_URL=$(config_get "//OPNsense/dslite/fixedip_update_url")
 FIXEDIP_AUTH_USER=$(config_get "//OPNsense/dslite/fixedip_auth_user")
 
@@ -73,14 +72,14 @@ if tunnel_exists; then
 
     remote_v6=$(printf '%s' "${ifdata}" | awk '/tunnel inet6/ {print $5; exit}')
     local_v6=$(printf '%s' "${ifdata}" | awk '/tunnel inet6/ {print $3; exit}')
-    br_target="${remote_v6:-${FIXEDIP_AFTR:-${AFTR_ADDRESS}}}"
+    br_target="${remote_v6:-$(get_expected_aftr)}"
     ce_source="${local_v6}"
     if [ -z "${ce_source}" ] && read_alias_state; then
         ce_source="${ALIAS_ADDR}"
     fi
 
-    # WAN /128 alias (Fixed IP only)
-    if [ "${MODE}" = "fixedip" ]; then
+    # WAN /128 alias (Fixed IP and MAP-E both place one on the WAN device)
+    if [ "${MODE}" = "fixedip" ] || [ "${MODE}" = "mape" ]; then
         wan_alias_if=$(get_wan_if_device)
         if [ -n "${ce_source}" ] && [ -n "${wan_alias_if}" ] && ifconfig "${wan_alias_if}" >/dev/null 2>&1; then
             if iface_has_v6 "${wan_alias_if}" "${ce_source}"; then

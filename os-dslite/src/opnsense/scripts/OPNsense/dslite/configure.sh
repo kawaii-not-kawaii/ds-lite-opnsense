@@ -132,6 +132,85 @@ print(str(ipaddress.ip_address(combined)))
     fi
 
     logger -t dslite "Fixed IP mode: local=${LOCAL_V6} aftr=${AFTR_ADDRESS} ipv4=${B4_ADDRESS}"
+elif [ "${TUNNEL_MODE}" = "mape" ]; then
+    # MAP-E (RFC 7597) -- EXPERIMENTAL.
+    MAPE_PROFILE=$(config_get "//OPNsense/dslite/mape_profile")
+    MAPE_BR=$(config_get "//OPNsense/dslite/mape_br")
+    MAPE_RULE_IPV6=$(config_get "//OPNsense/dslite/mape_rule_ipv6")
+    MAPE_RULE_IPV4=$(config_get "//OPNsense/dslite/mape_rule_ipv4")
+    MAPE_EA_LENGTH=$(config_get "//OPNsense/dslite/mape_ea_length")
+    MAPE_PSID_OFFSET=$(config_get "//OPNsense/dslite/mape_psid_offset")
+
+    # A profile supplies only the service-wide constants; the rule prefixes and
+    # EA length are per-subscriber and must come from the operator.
+    if [ -n "${MAPE_PROFILE}" ] && [ "${MAPE_PROFILE}" != "custom" ]; then
+        if mape_profile_lookup "${MAPE_PROFILE}"; then
+            [ -n "${MAPE_BR}" ] || MAPE_BR="${MAPE_P_BR}"
+            [ -n "${MAPE_PSID_OFFSET}" ] || MAPE_PSID_OFFSET="${MAPE_P_OFFSET}"
+        else
+            logger -t dslite "WARNING: unknown MAP-E profile '${MAPE_PROFILE}'"
+        fi
+    fi
+    MAPE_PSID_OFFSET="${MAPE_PSID_OFFSET:-6}"
+
+    if [ -z "${MAPE_BR}" ] || [ -z "${MAPE_RULE_IPV6}" ] || [ -z "${MAPE_RULE_IPV4}" ] ||
+       [ -z "${MAPE_EA_LENGTH}" ]; then
+        logger -t dslite "ERROR: MAP-E mode requires BR address, rule IPv6 prefix, rule IPv4 prefix and EA-bits length"
+        exit 1
+    fi
+
+    # Without map-e-portset, pf would translate to source ports outside our
+    # assigned set and the BR would silently drop the traffic. Refuse rather
+    # than bring up a tunnel that looks fine and does not pass packets.
+    if ! mape_pf_supported; then
+        logger -t dslite "ERROR: this pf does not support map-e-portset; MAP-E requires a FreeBSD base with RFC 7597 NAT port selection"
+        exit 1
+    fi
+
+    PD_PREFIX=$(get_pd_prefix)
+    if [ -z "${PD_PREFIX}" ]; then
+        for attempt in 1 2 3 4 5 6; do
+            logger -t dslite "Waiting for IPv6 prefix delegation (attempt ${attempt}/6)..."
+            sleep 5
+            PD_PREFIX=$(get_pd_prefix)
+            [ -n "${PD_PREFIX}" ] && break
+        done
+    fi
+    if [ -z "${PD_PREFIX}" ]; then
+        logger -t dslite "ERROR: MAP-E needs the delegated IPv6 prefix to derive the IPv4 address and PSID"
+        exit 1
+    fi
+
+    # Derivation refuses when the delegated prefix does not fall inside the
+    # rule, so a wrong rule fails here instead of producing a plausible but
+    # incorrect port set.
+    MAPE_DERIVED=$(mape_derive "${PD_PREFIX}" "${MAPE_RULE_IPV6}" "${MAPE_RULE_IPV4}" \
+        "${MAPE_EA_LENGTH}" "${MAPE_PSID_OFFSET}")
+    if [ -z "${MAPE_DERIVED}" ]; then
+        logger -t dslite "ERROR: MAP-E rule does not match the delegated prefix ${PD_PREFIX} (rule ${MAPE_RULE_IPV6} ea=${MAPE_EA_LENGTH} offset=${MAPE_PSID_OFFSET})"
+        exit 1
+    fi
+
+    set -- ${MAPE_DERIVED}
+    MAPE_IPV4="$1"
+    MAPE_PSID="$2"
+    MAPE_PSID_LEN="$3"
+    MAPE_CE="$4"
+    MAPE_RANGES="$5"
+    MAPE_PORTS="$6"
+
+    AFTR_ADDRESS="${MAPE_BR}"
+    B4_ADDRESS="${MAPE_IPV4}"
+    AFTR_V4_ADDRESS=""
+    LOCAL_V6="${MAPE_CE}"
+
+    if ! manage_wan_alias "${LOCAL_V6}" "${WAN_IF}"; then
+        logger -t dslite "ERROR: could not establish WAN /128 alias ${LOCAL_V6} on ${WAN_IF}; leaving the existing tunnel untouched"
+        exit 1
+    fi
+    sleep 1
+
+    logger -t dslite "MAP-E mode: ce=${MAPE_CE} br=${MAPE_BR} ipv4=${MAPE_IPV4} psid=${MAPE_PSID}/${MAPE_PSID_LEN} offset=${MAPE_PSID_OFFSET} (${MAPE_PORTS} ports in ${MAPE_RANGES} ranges)"
 else
     # Standard DS-Lite mode
     if [ -z "${AFTR_ADDRESS}" ]; then
@@ -181,6 +260,13 @@ else
     logger -t dslite "DS-Lite mode: local=${LOCAL_V6} aftr=${AFTR_ADDRESS}"
 fi
 
+# Fixed IP and MAP-E both put a single public IPv4 on the tunnel and route via
+# the interface; DS-Lite uses the RFC 6333 B4/AFTR point-to-point pair.
+case "${TUNNEL_MODE}" in
+    fixedip|mape) TUNNEL_P2P=1 ;;
+    *) TUNNEL_P2P=0 ;;
+esac
+
 # Tear down the existing tunnel, but only when it is ours. A gif unit belonging to
 # another consumer must not be hijacked.
 if tunnel_exists; then
@@ -212,10 +298,10 @@ fi
 record_owned_tunnel "${TUNNEL_IF}" "${LOCAL_V6}" "${AFTR_ADDRESS}"
 
 # Configure IPv4 addresses on tunnel
-if [ "${TUNNEL_MODE}" = "fixedip" ]; then
-    # Fixed IP: assign the public IPv4 as point-to-point on tunnel interface
+if [ "${TUNNEL_P2P}" = "1" ]; then
+    # Fixed IP / MAP-E: assign the public IPv4 as point-to-point on the tunnel
     ifconfig "${TUNNEL_IF}" inet "${B4_ADDRESS}" "${B4_ADDRESS}" netmask 255.255.255.255
-    logger -t dslite "Fixed IP ${B4_ADDRESS} assigned to ${TUNNEL_IF}"
+    logger -t dslite "IPv4 ${B4_ADDRESS} assigned to ${TUNNEL_IF}"
 else
     # DS-Lite: standard B4/AFTR point-to-point (RFC 6333)
     ifconfig "${TUNNEL_IF}" inet "${B4_ADDRESS}" "${AFTR_V4_ADDRESS}" netmask 255.255.255.248
@@ -236,7 +322,7 @@ logger -t dslite "Tunnel ${TUNNEL_IF} created via ${AFTR_ADDRESS}"
 # withdrawn first; "route change" then adjusts an existing foreign route in
 # place rather than blindly deleting whatever is in the table.
 remove_owned_default_route
-if [ "${TUNNEL_MODE}" = "fixedip" ]; then
+if [ "${TUNNEL_P2P}" = "1" ]; then
     # For IPIP tunnel, route via the tunnel interface directly
     if route add default -interface "${TUNNEL_IF}" 2>/dev/null ||
        route change default -interface "${TUNNEL_IF}" 2>/dev/null; then
@@ -258,7 +344,14 @@ fi
 # Configure NAT and firewall rules via OPNsense's registered anchors
 if [ "${NAT_ENABLED}" = "1" ]; then
     NAT_FILE="/tmp/dslite_nat.conf"
-    if [ "${TUNNEL_MODE}" = "fixedip" ]; then
+    if [ "${TUNNEL_MODE}" = "mape" ]; then
+        # MAP-E: the BR identifies this CE by the source port, so translation
+        # must stay inside our assigned port set. map-e-portset makes pf pick
+        # ports from exactly the set RFC 7597 derives from offset/len/PSID.
+        cat > "${NAT_FILE}" << NATEOF
+nat on ${TUNNEL_IF} from any to any -> ${B4_ADDRESS} map-e-portset ${MAPE_PSID_OFFSET}/${MAPE_PSID_LEN}/${MAPE_PSID}
+NATEOF
+    elif [ "${TUNNEL_MODE}" = "fixedip" ]; then
         # Fixed IP: NAT to the public fixed IP
         cat > "${NAT_FILE}" << NATEOF
 nat on ${TUNNEL_IF} from any to any -> ${B4_ADDRESS}
