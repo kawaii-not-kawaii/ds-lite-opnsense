@@ -1,0 +1,12 @@
+# Force LF for all source so Windows checkouts don't corrupt FreeBSD shell scripts
+* text=auto eol=lf
+*.sh   text eol=lf
+*.php  text eol=lf
+*.inc  text eol=lf
+*.xml  text eol=lf
+*.volt text eol=lf
+*.js   text eol=lf
+*.conf text eol=lf
+*.md   text eol=lf
+Makefile text eol=lf
+*.png binary
