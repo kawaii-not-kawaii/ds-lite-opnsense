@@ -56,4 +56,23 @@ class ServiceController extends ApiMutableServiceControllerBase
         $response = $backend->configdRun('dslite diagnostics');
         return json_decode($response, true) ?? ['error' => 'failed to run diagnostics'];
     }
+
+    /**
+     * Send a live prefix update to the ISP.
+     *
+     * Deliberately separate from diagnosticsAction() and POST-only: this
+     * spends credentials and changes provider-side state, so it must never
+     * happen as a side effect of opening or refreshing a page.
+     */
+    public function prefixUpdateAction()
+    {
+        if (!$this->request->isPost()) {
+            return ['result' => 'failed', 'message' => 'POST required'];
+        }
+
+        $backend = new Backend();
+        $backend->configdRun('dslite prefix_update');
+
+        return ['result' => 'ok'];
+    }
 }

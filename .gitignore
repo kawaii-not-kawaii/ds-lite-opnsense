@@ -7,3 +7,7 @@ __pycache__/
 *.har
 *.bin
 *.zip
+
+# pkg build artifacts
+os-dslite/.pkgbuild/
+os-dslite/dist/

@@ -2,15 +2,54 @@
 
 # DS-Lite / Fixed IP tunnel configuration script
 # Creates gif tunnel interface for IPv4-in-IPv6 encapsulation
+#
+# Invocation: no argument for the hook-driven path (boot, WAN renewal, Apply),
+# "restart" to tear down first, "start" from the service control.
 
 SCRIPT_DIR=$(dirname "$0")
+
+# Serialize concurrent invocations. rc.newwanip, a config save and the service
+# control can all fire at once; a wall-clock comparison is not serialization.
+LOCK_FILE="/var/run/dslite_configure.lock"
+if [ -z "${DSLITE_CONFIGURE_LOCKED}" ] && [ -x /usr/bin/lockf ]; then
+    DSLITE_CONFIGURE_LOCKED=1
+    export DSLITE_CONFIGURE_LOCKED
+    exec /usr/bin/lockf -k -t 120 "${LOCK_FILE}" "$0" "$@"
+fi
+
 . "${SCRIPT_DIR}/lib.sh"
 
 # Load configuration
 get_config
 
+ACTION="$1"
+STAMP_FILE="/var/run/dslite_configure.stamp"
+
+# Coalesce redundant hook-driven runs. Only the asynchronous path is debounced:
+# an explicit start/restart, and any run following a failure, must always do the
+# work. The stamp is written after a successful run, never before, so a failed
+# attempt can never suppress the retry that fixes it.
+case "${ACTION}" in
+    restart|start)
+        ;;
+    *)
+        if [ -f "${STAMP_FILE}" ]; then
+            LAST=$(cat "${STAMP_FILE}" 2>/dev/null)
+            case "${LAST}" in
+                ''|*[!0-9]*) LAST=0 ;;
+            esac
+            NOW=$(date +%s)
+            # A backwards clock step would otherwise suppress work indefinitely.
+            if [ "${LAST}" -le "${NOW}" ] && [ $(( NOW - LAST )) -lt 3 ]; then
+                logger -t dslite "Skipping duplicate configure trigger"
+                exit 0
+            fi
+        fi
+        ;;
+esac
+
 # Check if we should tear down first (restart)
-if [ "$1" = "restart" ]; then
+if [ "${ACTION}" = "restart" ]; then
     "${SCRIPT_DIR}/teardown.sh"
 fi
 
@@ -22,8 +61,9 @@ if [ "${DSLITE_ENABLED}" != "1" ]; then
 fi
 
 # Determine tunnel parameters based on mode
-TUNNEL_MODE=$(config_get "//OPNsense/dslite/mode")
-TUNNEL_MODE="${TUNNEL_MODE:-dslite}"
+TUNNEL_MODE=$(get_mode)
+
+WAN_IF=$(get_wan_if_device)
 
 if [ "${TUNNEL_MODE}" = "fixedip" ]; then
     # Fixed IP mode: use member-specific parameters from Asahi Net / v6 Connect
@@ -46,10 +86,6 @@ if [ "${TUNNEL_MODE}" = "fixedip" ]; then
     # The Interface ID needs to be combined with the PD prefix to form
     # a full routable IPv6 address for the tunnel source.
     # Asahi Net provides the Interface ID as the host portion.
-    WAN_IF=$(config_get "//interfaces/${WAN_INTERFACE}/if")
-    WAN_IF="${WAN_IF:-${WAN_INTERFACE}}"
-
-    # Get the PD prefix to combine with Interface ID
     PD_PREFIX=$(get_pd_prefix)
     if [ -n "${PD_PREFIX}" ] && command -v python3 >/dev/null 2>&1; then
         # Combine prefix + interface ID using python for reliable IPv6 math
@@ -73,17 +109,25 @@ print(str(ipaddress.ip_address(combined)))
         LOCAL_V6="${FIXEDIP_INTERFACE_ID}"
     fi
 
-    # Assign the combined address to the WAN interface if not present
-    if ! ifconfig "${WAN_IF}" 2>/dev/null | grep -q "${LOCAL_V6}"; then
-        ifconfig "${WAN_IF}" inet6 "${LOCAL_V6}" prefixlen 128
-        logger -t dslite "Assigned ${LOCAL_V6} to ${WAN_IF}"
-        sleep 2
+    # Assign/refresh the tunnel-local /128 on WAN, cleaning up any stale alias.
+    # A failure here means the tunnel source address does not exist, so the
+    # replacement tunnel would be unusable: stop before destroying the working
+    # one rather than after.
+    if ! manage_wan_alias "${LOCAL_V6}" "${WAN_IF}"; then
+        logger -t dslite "ERROR: could not establish WAN /128 alias ${LOCAL_V6} on ${WAN_IF}; leaving the existing tunnel untouched"
+        exit 1
     fi
+    sleep 1
 
-    # Run prefix update if configured
+    # Refresh the provider-side prefix registration. Credentials go via a
+    # mode-0600 netrc and are never sent over an unverified connection.
     if [ -n "${FIXEDIP_UPDATE_URL}" ] && [ -n "${FIXEDIP_AUTH_USER}" ]; then
         logger -t dslite "Sending prefix update to ${FIXEDIP_UPDATE_URL}"
-        UPDATE_RESULT=$(curl -6 -sk -u "${FIXEDIP_AUTH_USER}:${FIXEDIP_AUTH_PASS}" "${FIXEDIP_UPDATE_URL}" 2>&1)
+        UPDATE_RESULT=$(dslite_authed_get "${FIXEDIP_UPDATE_URL}" "${FIXEDIP_AUTH_USER}" \
+            "${FIXEDIP_AUTH_PASS}" "${FIXEDIP_ALLOW_INSECURE}")
+        UPDATE_RC=$?
+        UPDATE_CODE=$(printf '%s' "${UPDATE_RESULT}" | awk '{print $1; exit}')
+        write_prefix_update_state "${UPDATE_RC}" "${UPDATE_CODE}"
         logger -t dslite "Prefix update response: ${UPDATE_RESULT}"
     fi
 
@@ -95,44 +139,37 @@ else
         exit 1
     fi
 
+    # A native global address on the WAN is preferred. Any /128 we manage
+    # ourselves is dropped first so that a Fixed IP -> DS-Lite mode change does
+    # not leave a stale alias behind, and cannot be picked as the source.
+    if read_alias_state; then
+        if ! remove_wan_alias "${WAN_IF}"; then
+            logger -t dslite "ERROR: could not remove the managed WAN /128 alias; aborting"
+            exit 1
+        fi
+    fi
+
     # Get WAN IPv6 address (global scope)
     LOCAL_V6=$(get_wan_ipv6)
 
     # If no global address, try to derive one from DHCPv6-PD prefix
     if [ -z "${LOCAL_V6}" ]; then
         logger -t dslite "No global IPv6 on WAN, attempting to derive from PD prefix"
-        PD_PREFIX=$(get_pd_prefix)
-        if [ -n "${PD_PREFIX}" ]; then
-            BASE_PREFIX=$(echo "${PD_PREFIX}" | sed 's|/.*||; s/::$//')
-            LOCAL_V6="${BASE_PREFIX}::1"
-            WAN_IF=$(config_get "//interfaces/${WAN_INTERFACE}/if")
-            WAN_IF="${WAN_IF:-${WAN_INTERFACE}}"
-            if ! ifconfig "${WAN_IF}" 2>/dev/null | grep -q "${LOCAL_V6}"; then
-                ifconfig "${WAN_IF}" inet6 "${LOCAL_V6}" prefixlen 128
-                logger -t dslite "Assigned ${LOCAL_V6} to ${WAN_IF} from PD prefix ${PD_PREFIX}"
-                sleep 2
-            fi
-        fi
-    fi
-
-    if [ -z "${LOCAL_V6}" ]; then
-        # Retry a few times - PD may not be ready at boot
-        for i in 1 2 3 4 5; do
-            logger -t dslite "Waiting for IPv6 prefix delegation (attempt $i/5)..."
-            sleep 5
+        # PD may not be ready at boot, so retry for a while.
+        for attempt in 1 2 3 4 5 6; do
             PD_PREFIX=$(get_pd_prefix)
             if [ -n "${PD_PREFIX}" ]; then
                 BASE_PREFIX=$(echo "${PD_PREFIX}" | sed 's|/.*||; s/::$//')
                 LOCAL_V6="${BASE_PREFIX}::1"
-                WAN_IF=$(config_get "//interfaces/${WAN_INTERFACE}/if")
-                WAN_IF="${WAN_IF:-${WAN_INTERFACE}}"
-                if ! ifconfig "${WAN_IF}" 2>/dev/null | grep -q "${LOCAL_V6}"; then
-                    ifconfig "${WAN_IF}" inet6 "${LOCAL_V6}" prefixlen 128
-                    logger -t dslite "Assigned ${LOCAL_V6} to ${WAN_IF} from PD prefix ${PD_PREFIX}"
-                    sleep 2
+                if ! manage_wan_alias "${LOCAL_V6}" "${WAN_IF}"; then
+                    logger -t dslite "ERROR: could not establish WAN /128 alias ${LOCAL_V6} on ${WAN_IF}"
+                    exit 1
                 fi
+                sleep 1
                 break
             fi
+            logger -t dslite "Waiting for IPv6 prefix delegation (attempt ${attempt}/6)..."
+            sleep 5
         done
     fi
 
@@ -144,26 +181,35 @@ else
     logger -t dslite "DS-Lite mode: local=${LOCAL_V6} aftr=${AFTR_ADDRESS}"
 fi
 
-# Tear down existing tunnel if present
+# Tear down the existing tunnel, but only when it is ours. A gif0 belonging to
+# another consumer must not be hijacked.
 if tunnel_exists; then
-    logger -t dslite "Removing existing tunnel interface ${TUNNEL_IF}"
-    ifconfig "${TUNNEL_IF}" destroy 2>/dev/null
+    if tunnel_is_ours "${TUNNEL_IF}"; then
+        logger -t dslite "Removing existing tunnel interface ${TUNNEL_IF}"
+        ifconfig "${TUNNEL_IF}" destroy 2>/dev/null
+    else
+        logger -t dslite "ERROR: ${TUNNEL_IF} exists but was not created by this plugin; refusing to take it over"
+        exit 1
+    fi
 fi
+rm -f "${STATE_OWNED_IF}"
 
 # Create gif tunnel interface
-ifconfig "${TUNNEL_IF}" create
-if [ $? -ne 0 ]; then
+if ! ifconfig "${TUNNEL_IF}" create; then
     logger -t dslite "ERROR: Failed to create ${TUNNEL_IF}"
     exit 1
 fi
 
 # Configure IPv6 tunnel endpoints (IPv4-in-IPv6)
-ifconfig "${TUNNEL_IF}" inet6 tunnel "${LOCAL_V6}" "${AFTR_ADDRESS}"
-if [ $? -ne 0 ]; then
+if ! ifconfig "${TUNNEL_IF}" inet6 tunnel "${LOCAL_V6}" "${AFTR_ADDRESS}"; then
     logger -t dslite "ERROR: Failed to set tunnel endpoints"
     ifconfig "${TUNNEL_IF}" destroy 2>/dev/null
     exit 1
 fi
+
+# Claim ownership as soon as the endpoints are in place, so that a teardown
+# after a partial failure still knows this interface is ours to remove.
+record_owned_tunnel "${TUNNEL_IF}" "${LOCAL_V6}" "${AFTR_ADDRESS}"
 
 # Configure IPv4 addresses on tunnel
 if [ "${TUNNEL_MODE}" = "fixedip" ]; then
@@ -186,45 +232,52 @@ ifconfig "${TUNNEL_IF}" up
 
 logger -t dslite "Tunnel ${TUNNEL_IF} created via ${AFTR_ADDRESS}"
 
-# Add default IPv4 route through tunnel
-route delete default 2>/dev/null
+# Install the default IPv4 route through the tunnel. Our own previous route is
+# withdrawn first; "route change" then adjusts an existing foreign route in
+# place rather than blindly deleting whatever is in the table.
+remove_owned_default_route
 if [ "${TUNNEL_MODE}" = "fixedip" ]; then
     # For IPIP tunnel, route via the tunnel interface directly
-    route add default -interface "${TUNNEL_IF}" 2>/dev/null
+    if route add default -interface "${TUNNEL_IF}" 2>/dev/null ||
+       route change default -interface "${TUNNEL_IF}" 2>/dev/null; then
+        record_owned_route "iface" "-" "${TUNNEL_IF}"
+        logger -t dslite "Default IPv4 route set via ${TUNNEL_IF}"
+    else
+        logger -t dslite "WARNING: Failed to add default route via ${TUNNEL_IF}"
+    fi
 else
-    route add default "${AFTR_V4_ADDRESS}" 2>/dev/null
+    if route add default "${AFTR_V4_ADDRESS}" 2>/dev/null ||
+       route change default "${AFTR_V4_ADDRESS}" 2>/dev/null; then
+        record_owned_route "gw" "${AFTR_V4_ADDRESS}" "${TUNNEL_IF}"
+        logger -t dslite "Default IPv4 route set via ${AFTR_V4_ADDRESS}"
+    else
+        logger -t dslite "WARNING: Failed to add default route via ${AFTR_V4_ADDRESS}"
+    fi
 fi
-
-if [ $? -ne 0 ]; then
-    logger -t dslite "WARNING: Failed to add default route"
-fi
-
-logger -t dslite "Default IPv4 route set"
 
 # Configure NAT and firewall rules via OPNsense's registered anchors
 if [ "${NAT_ENABLED}" = "1" ]; then
     NAT_FILE="/tmp/dslite_nat.conf"
     if [ "${TUNNEL_MODE}" = "fixedip" ]; then
         # Fixed IP: NAT to the public fixed IP
-        cat > "${NAT_FILE}" << EOF
+        cat > "${NAT_FILE}" << NATEOF
 nat on ${TUNNEL_IF} from any to any -> ${B4_ADDRESS}
-EOF
+NATEOF
     else
         # DS-Lite: NAT to tunnel interface address
-        cat > "${NAT_FILE}" << EOF
+        cat > "${NAT_FILE}" << NATEOF
 nat on ${TUNNEL_IF} from any to any -> (${TUNNEL_IF})
-EOF
+NATEOF
     fi
 
     FW_FILE="/tmp/dslite_fw.conf"
-    cat > "${FW_FILE}" << EOF
+    cat > "${FW_FILE}" << FWEOF
 pass out quick on ${TUNNEL_IF} all keep state
 pass in quick on ${TUNNEL_IF} all keep state
-EOF
+FWEOF
 
     # Load into OPNsense's registered anchors
-    pfctl -a "dslite/nat" -f "${NAT_FILE}" 2>/dev/null
-    if [ $? -eq 0 ]; then
+    if pfctl -a "dslite/nat" -f "${NAT_FILE}" 2>/dev/null; then
         logger -t dslite "NAT rules loaded for ${TUNNEL_IF}"
     else
         logger -t dslite "WARNING: Failed to load NAT anchor, trying filter reload"
@@ -233,38 +286,19 @@ EOF
         pfctl -a "dslite/nat" -f "${NAT_FILE}" 2>/dev/null
     fi
 
-    pfctl -a "dslite/fw" -f "${FW_FILE}" 2>/dev/null
-    if [ $? -eq 0 ]; then
+    if pfctl -a "dslite/fw" -f "${FW_FILE}" 2>/dev/null; then
         logger -t dslite "Firewall rules loaded for ${TUNNEL_IF}"
     else
         logger -t dslite "WARNING: Failed to load firewall anchor"
     fi
 fi
 
-# Set up periodic prefix update cron job for Fixed IP mode
-if [ "${TUNNEL_MODE}" = "fixedip" ] && [ -n "${FIXEDIP_UPDATE_URL}" ] && [ -n "${FIXEDIP_AUTH_USER}" ]; then
-    CRON_FILE="/usr/local/opnsense/scripts/OPNsense/dslite/prefix_update.sh"
-    cat > "${CRON_FILE}" << 'CRONEOF'
-#!/bin/sh
-# DS-Lite Fixed IP prefix update - reads credentials at runtime
-SCRIPT_DIR=$(dirname "$0")
-. "${SCRIPT_DIR}/lib.sh"
-get_config
-UPDATE_URL=$(config_get "//OPNsense/dslite/fixedip_update_url")
-AUTH_USER=$(config_get "//OPNsense/dslite/fixedip_auth_user")
-AUTH_PASS=$(config_get "//OPNsense/dslite/fixedip_auth_pass")
-if [ -n "${UPDATE_URL}" ] && [ -n "${AUTH_USER}" ]; then
-    NETRC=$(mktemp)
-    chmod 600 "${NETRC}"
-    printf "default\nlogin %s\npassword %s\n" "${AUTH_USER}" "${AUTH_PASS}" > "${NETRC}"
-    RESULT=$(curl -6 -sk --netrc-file "${NETRC}" "${UPDATE_URL}" 2>&1)
-    rm -f "${NETRC}"
-    logger -t dslite "Periodic prefix update: ${RESULT}"
-fi
-CRONEOF
-    chmod 700 "${CRON_FILE}"
-    logger -t dslite "Prefix update script created"
-fi
+# Drop any cached health result so the next status poll reflects the new tunnel.
+rm -f /var/run/dslite_health_cache
+
+# Mark this run successful. The debounce above only ever suppresses work that
+# followed a run which actually completed.
+date +%s > "${STAMP_FILE}"
 
 logger -t dslite "Tunnel configuration complete (mode: ${TUNNEL_MODE})"
 exit 0

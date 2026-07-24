@@ -134,18 +134,37 @@
                 if (data && data.tunnel) {
                     var t = data.tunnel;
 
-                    if (t.status === 'up' && t.connectivity === 'connected') {
+                    // The explicit health verdict takes precedence: a tunnel can
+                    // be up and passing IPv4 while route, DNS, MTU, alias or
+                    // prefix-update checks are failing, and that must not read
+                    // as a plain green "Connected".
+                    if (t.health === 'healthy') {
+                        setStatus('Connected', 'fa-check-circle text-success', 'label-success');
+                    } else if (t.health === 'degraded') {
+                        if (t.connectivity === 'no internet') {
+                            setStatus('Tunnel Up (No Internet)', 'fa-exclamation-circle text-warning', 'label-warning');
+                        } else {
+                            setStatus('Degraded', 'fa-exclamation-circle text-warning', 'label-warning');
+                        }
+                    } else if (t.status === 'disabled') {
+                        setStatus('Disabled', 'fa-minus-circle text-muted', 'label-default');
+                    } else if (t.health === 'offline' || t.status === 'not configured') {
+                        setStatus('Not Running', 'fa-circle text-danger', 'label-danger');
+                    } else if (t.status === 'up' && t.connectivity === 'connected') {
                         setStatus('Connected', 'fa-check-circle text-success', 'label-success');
                     } else if (t.status === 'up' && t.connectivity === 'no internet') {
                         setStatus('Tunnel Up (No Internet)', 'fa-exclamation-circle text-warning', 'label-warning');
                     } else if (t.status === 'up') {
                         setStatus('Tunnel Up', 'fa-circle text-success', 'label-success');
-                    } else if (t.status === 'disabled') {
-                        setStatus('Disabled', 'fa-minus-circle text-muted', 'label-default');
-                    } else if (t.status === 'not configured') {
-                        setStatus('Not Running', 'fa-circle text-danger', 'label-danger');
                     } else {
                         setStatus(t.status, 'fa-question-circle text-muted', 'label-default');
+                    }
+
+                    if (t.health && t.health !== 'healthy' && t.health_failures) {
+                        $('#tunnel_failed_checks').text(t.health_failures);
+                        $('#tunnel_failed_checks').closest('tr').show();
+                    } else {
+                        $('#tunnel_failed_checks').closest('tr').hide();
                     }
 
                     if (t.connectivity === 'connected') {
@@ -161,11 +180,13 @@
                     $('#tunnel_ipv4').text(t.ipv4 || '-');
                     $('#tunnel_mtu').text(t.mtu || '-');
 
+                    // closest('tr'), not parent(): parent() is the <td>, and
+                    // showing that leaves the hidden row itself hidden.
                     if (t.reason) {
                         $('#tunnel_reason').text(t.reason);
-                        $('#tunnel_reason').parent().show();
+                        $('#tunnel_reason').closest('tr').show();
                     } else {
-                        $('#tunnel_reason').parent().hide();
+                        $('#tunnel_reason').closest('tr').hide();
                     }
                 }
             });
@@ -192,6 +213,10 @@
                 <tr>
                     <td><strong>{{ lang._('Connectivity') }}</strong></td>
                     <td><span id="tunnel_connectivity">-</span></td>
+                </tr>
+                <tr style="display:none;">
+                    <td><strong>{{ lang._('Failed checks') }}</strong></td>
+                    <td><span id="tunnel_failed_checks" class="text-warning"></span></td>
                 </tr>
                 <tr>
                     <td><strong>{{ lang._('Local IPv6') }}</strong></td>

@@ -6,6 +6,21 @@
 TUNNEL_IF="gif0"
 CONFIG_XML="/conf/config.xml"
 
+# FreeBSD ping(8) expresses -W in MILLISECONDS (unlike Linux, where it is
+# seconds). Every probe in this plugin must use this value, not a bare "2".
+PING_WAIT_MS=2000
+
+# Runtime state. Everything under /var/run is cleared on reboot, which is the
+# correct lifetime for "what did we install into the running kernel".
+STATE_LOCAL_V6="/var/run/dslite_local_tunnel_v6"        # "<device> <address>"
+STATE_OWNED_IF="/var/run/dslite_owned_tunnel"           # "<ifname> <local_v6> <remote_v6>"
+STATE_OWNED_ROUTE="/var/run/dslite_owned_route"         # "<iface|gw> <gateway|-> <ifname>"
+STATE_PREFIX_UPDATE="/var/run/dslite_prefix_update_status"  # "<epoch> <rc> <code>"
+
+# Maximum age of a prefix-update result before health reports it as stale.
+# Must be comfortably larger than the cron interval in dslite_cron().
+PREFIX_UPDATE_MAX_AGE=5400
+
 # Known ISP AFTR addresses (fallback only - prefer auto-detection)
 AFTR_TRANSIX="2001:c28:5:301::11"
 AFTR_XPASS="2001:f60:0:200::1"
@@ -158,6 +173,7 @@ get_config() {
     MTU=$(config_get "//OPNsense/dslite/mtu")
     MSS_CLAMP=$(config_get "//OPNsense/dslite/mss_clamp")
     NAT_ENABLED=$(config_get "//OPNsense/dslite/nat_enabled")
+    FIXEDIP_ALLOW_INSECURE=$(config_get "//OPNsense/dslite/fixedip_allow_insecure")
 
     # Defaults
     B4_ADDRESS="${B4_ADDRESS:-192.0.0.2}"
@@ -165,6 +181,7 @@ get_config() {
     MTU="${MTU:-1460}"
     MSS_CLAMP="${MSS_CLAMP:-1420}"
     NAT_ENABLED="${NAT_ENABLED:-1}"
+    FIXEDIP_ALLOW_INSECURE="${FIXEDIP_ALLOW_INSECURE:-0}"
 
     # AFTR discovery priority:
     # 1. Explicit address in config (user override)
@@ -278,27 +295,276 @@ tunnel_exists() {
     ifconfig "${TUNNEL_IF}" >/dev/null 2>&1
 }
 
-# Get tunnel status as JSON
-get_tunnel_status() {
-    if tunnel_exists; then
-        local ifdata
-        ifdata=$(ifconfig "${TUNNEL_IF}" 2>/dev/null)
-        local status="down"
-        echo "${ifdata}" | grep -q "UP" && status="up"
+# Escape an arbitrary string for use inside a JSON string literal.
+# Control characters are dropped (tabs become spaces, newlines become \n) so
+# that provider-controlled data can never break the generated document.
+json_escape() {
+    printf '%s' "$1" \
+        | tr -d '\000-\010\013-\037\177' \
+        | tr '\011' ' ' \
+        | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' \
+        | awk '{ if (NR > 1) printf "\\n"; printf "%s", $0 }'
+}
 
-        local local_v6
-        local_v6=$(echo "${ifdata}" | grep "tunnel inet6" | awk '{print $3}')
+# Resolve the configured tunnel mode ("dslite" or "fixedip").
+get_mode() {
+    local mode
+    mode=$(config_get "//OPNsense/dslite/mode")
+    printf '%s' "${mode:-dslite}"
+}
 
-        local remote_v6
-        remote_v6=$(echo "${ifdata}" | grep "tunnel inet6" | awk '{print $5}')
-
-        local mtu
-        mtu=$(echo "${ifdata}" | grep "mtu" | head -1 | sed 's/.*mtu //' | awk '{print $1}')
-
-        printf '{"tunnel":{"status":"%s","local_v6":"%s","aftr":"%s","mtu":"%s","interface":"%s"}}' \
-            "${status}" "${local_v6}" "${remote_v6}" "${mtu}" "${TUNNEL_IF}"
+# The AFTR/BR endpoint the current configuration would build a tunnel to.
+# In Fixed IP mode this comes from the member-specific field, otherwise from
+# the AFTR discovery chain already run by get_config().
+get_expected_aftr() {
+    if [ "$(get_mode)" = "fixedip" ]; then
+        config_get "//OPNsense/dslite/fixedip_aftr"
     else
-        printf '{"tunnel":{"status":"not configured","local_v6":"-","aftr":"-","mtu":"-","interface":"%s"}}' \
-            "${TUNNEL_IF}"
+        printf '%s' "${AFTR_ADDRESS}"
     fi
+}
+
+# ---------------------------------------------------------------------------
+# Authenticated prefix update transport
+# ---------------------------------------------------------------------------
+
+# Perform the authenticated prefix-update request.
+# Usage: dslite_authed_get <url> <user> <pass> <allow_insecure>
+# Writes the response body to stdout. Returns curl's exit status, or 2 when the
+# request was refused because credentials would have been sent insecurely.
+#
+# Credentials go through a mode-0600 netrc so they never appear in argv, and
+# certificate verification is never disabled for an https:// endpoint.
+dslite_authed_get() {
+    local url="$1" user="$2" pass="$3" allow="$4"
+    local netrc out rc
+
+    [ -n "${url}" ] || return 2
+
+    case "${url}" in
+        https://*)
+            ;;
+        *)
+            if [ "${allow}" = "1" ]; then
+                logger -t dslite "WARNING: sending prefix-update credentials over an insecure URL (${url})"
+            else
+                logger -t dslite "ERROR: refusing to send credentials to non-HTTPS update URL (${url}). Enable 'Allow insecure update URL' only if your ISP offers no HTTPS endpoint."
+                return 2
+            fi
+            ;;
+    esac
+
+    netrc=$(umask 077; mktemp /tmp/dslite-netrc.XXXXXX) || return 2
+    chmod 600 "${netrc}"
+    printf 'default\nlogin %s\npassword %s\n' "${user}" "${pass}" > "${netrc}"
+
+    # --max-time bounds a server that accepts the connection and then stalls;
+    # --connect-timeout alone does not.
+    out=$(curl -6 -s --connect-timeout 5 --max-time 20 --netrc-file "${netrc}" "${url}" 2>&1)
+    rc=$?
+    rm -f "${netrc}"
+
+    printf '%s' "${out}"
+    return ${rc}
+}
+
+# Record a prefix-update outcome for the status/diagnostics pages.
+# Usage: write_prefix_update_state <rc> <code>
+write_prefix_update_state() {
+    printf '%s %s %s\n' "$(date +%s)" "$1" "${2:-curl-error}" > "${STATE_PREFIX_UPDATE}"
+}
+
+# ---------------------------------------------------------------------------
+# WAN /128 tunnel-local alias lifecycle
+# (concept ported from unchained-llc/os-ocnfixedip, BSD-2-Clause; reworked to
+#  be transactional and to remember which device owns the alias)
+# ---------------------------------------------------------------------------
+
+# Resolve the configured WAN interface to its real device name (e.g. igb0).
+get_wan_if_device() {
+    local wan_if
+    wan_if=$(config_get "//interfaces/${WAN_INTERFACE}/if")
+    [ -n "${wan_if}" ] || wan_if="${WAN_INTERFACE}"
+    printf '%s' "${wan_if}"
+}
+
+# True when <device> currently carries <address> as an inet6 address.
+iface_has_v6() {
+    ifconfig "$1" 2>/dev/null | awk '/inet6 / {gsub(/%.*/,"",$2); print $2}' | grep -qx "$2"
+}
+
+# Load the managed alias state into ALIAS_DEV / ALIAS_ADDR.
+# Returns non-zero when no usable state exists. Understands the legacy
+# address-only format written by earlier versions.
+read_alias_state() {
+    ALIAS_DEV=""
+    ALIAS_ADDR=""
+    [ -f "${STATE_LOCAL_V6}" ] || return 1
+    read -r ALIAS_DEV ALIAS_ADDR < "${STATE_LOCAL_V6}" 2>/dev/null || return 1
+    if [ -z "${ALIAS_ADDR}" ]; then
+        ALIAS_ADDR="${ALIAS_DEV}"
+        ALIAS_DEV=""
+    fi
+    [ -n "${ALIAS_ADDR}" ]
+}
+
+# Remove one managed alias. Returns 0 only when the address is confirmed gone
+# (including the cases where the device or the address never existed).
+drop_alias() {
+    local dev="$1" addr="$2"
+    [ -n "${dev}" ] && [ -n "${addr}" ] || return 0
+    ifconfig "${dev}" >/dev/null 2>&1 || return 0
+    iface_has_v6 "${dev}" "${addr}" || return 0
+
+    ifconfig "${dev}" inet6 "${addr}" -alias 2>/dev/null
+    if iface_has_v6 "${dev}" "${addr}"; then
+        logger -t dslite "WARNING: failed to remove WAN /128 alias ${addr} on ${dev}"
+        return 1
+    fi
+    logger -t dslite "Removed WAN /128 alias ${addr} on ${dev}"
+    return 0
+}
+
+# Ensure a /128 tunnel-local alias exists on the WAN device, first removing a
+# previously-managed alias when the device or the address changed.
+#
+# Returns 0 only when the address is verified present on the expected device;
+# callers must abort tunnel replacement on a non-zero return. State is written
+# after verification, never before, so it always describes reality.
+manage_wan_alias() {
+    local new_v6="$1" wan_if="$2" prev_dev
+
+    [ -n "${new_v6}" ] && [ -n "${wan_if}" ] || return 1
+    if ! ifconfig "${wan_if}" >/dev/null 2>&1; then
+        logger -t dslite "ERROR: WAN device ${wan_if} not present, cannot manage /128 alias"
+        return 1
+    fi
+
+    if read_alias_state; then
+        prev_dev="${ALIAS_DEV:-${wan_if}}"
+        if [ "${prev_dev}" != "${wan_if}" ] || [ "${ALIAS_ADDR}" != "${new_v6}" ]; then
+            # Keep the state file on failure so a later run can retry.
+            drop_alias "${prev_dev}" "${ALIAS_ADDR}" || return 1
+        fi
+    fi
+
+    if ! iface_has_v6 "${wan_if}" "${new_v6}"; then
+        ifconfig "${wan_if}" inet6 "${new_v6}"/128 alias 2>/dev/null
+        if ! iface_has_v6 "${wan_if}" "${new_v6}"; then
+            logger -t dslite "ERROR: failed to add WAN /128 alias ${new_v6} on ${wan_if}"
+            return 1
+        fi
+        logger -t dslite "Added WAN /128 alias ${new_v6} on ${wan_if}"
+    fi
+
+    printf '%s %s\n' "${wan_if}" "${new_v6}" > "${STATE_LOCAL_V6}"
+    return 0
+}
+
+# Remove the managed /128 alias (teardown, or when leaving Fixed IP mode).
+# The recorded device wins over the caller's guess so that a WAN change still
+# cleans up the old device. State is cleared only once removal is confirmed.
+remove_wan_alias() {
+    local fallback_dev="$1" dev
+
+    if ! read_alias_state; then
+        rm -f "${STATE_LOCAL_V6}"
+        return 0
+    fi
+
+    dev="${ALIAS_DEV:-${fallback_dev}}"
+    if drop_alias "${dev}" "${ALIAS_ADDR}"; then
+        rm -f "${STATE_LOCAL_V6}"
+        return 0
+    fi
+    return 1
+}
+
+# ---------------------------------------------------------------------------
+# Tunnel / default-route ownership
+#
+# Nothing is torn down unless we can prove we created it. A gif interface or a
+# default route that predates the plugin belongs to somebody else.
+# ---------------------------------------------------------------------------
+
+record_owned_tunnel() {
+    printf '%s %s %s\n' "$1" "$2" "$3" > "${STATE_OWNED_IF}"
+}
+
+# "iface <ifname>" for an interface route, "gw <address> <ifname>" otherwise.
+record_owned_route() {
+    printf '%s %s %s\n' "$1" "${2:--}" "$3" > "${STATE_OWNED_ROUTE}"
+}
+
+# Read the live tunnel endpoints of <device> into TUN_LOCAL / TUN_REMOTE.
+read_tunnel_endpoints() {
+    local ifdata
+    TUN_LOCAL=""
+    TUN_REMOTE=""
+    ifdata=$(ifconfig "$1" 2>/dev/null) || return 1
+    TUN_LOCAL=$(printf '%s' "${ifdata}" | awk '/tunnel inet6/ {gsub(/%.*/,"",$3); print $3; exit}')
+    TUN_REMOTE=$(printf '%s' "${ifdata}" | awk '/tunnel inet6/ {gsub(/%.*/,"",$5); print $5; exit}')
+    return 0
+}
+
+# True when <device> is a gif tunnel this plugin created.
+#
+# Preferred proof is the ownership state file written at creation time. When it
+# is absent (upgrade from a version that did not record ownership, or /var/run
+# cleared) we fall back to matching the live remote endpoint against the AFTR
+# the current configuration would use. With neither, we claim nothing.
+tunnel_is_ours() {
+    local dev="$1" sdev want_local want_remote expected_aftr
+
+    ifconfig "${dev}" >/dev/null 2>&1 || return 1
+    read_tunnel_endpoints "${dev}" || return 1
+
+    if [ -f "${STATE_OWNED_IF}" ]; then
+        read -r sdev want_local want_remote < "${STATE_OWNED_IF}" 2>/dev/null || return 1
+        [ "${sdev}" = "${dev}" ] || return 1
+        [ "${TUN_LOCAL}" = "${want_local}" ] && [ "${TUN_REMOTE}" = "${want_remote}" ]
+        return $?
+    fi
+
+    expected_aftr=$(get_expected_aftr)
+    [ -n "${expected_aftr}" ] || return 1
+    [ "${TUN_REMOTE}" = "${expected_aftr}" ]
+}
+
+# Delete the default route only when it is still the one we installed.
+# A route that has since moved elsewhere belongs to the system again.
+remove_owned_default_route() {
+    local kind sgw sif cur_gw cur_if route_info
+
+    if [ ! -f "${STATE_OWNED_ROUTE}" ]; then
+        logger -t dslite "No recorded default-route ownership; leaving the system default route untouched"
+        return 0
+    fi
+    read -r kind sgw sif < "${STATE_OWNED_ROUTE}" 2>/dev/null || return 0
+
+    route_info=$(route -n get default 2>/dev/null)
+    cur_gw=$(printf '%s' "${route_info}" | awk -F': ' '/gateway:/ {gsub(/[[:space:]]/,"",$2); print $2; exit}')
+    cur_if=$(printf '%s' "${route_info}" | awk -F': ' '/interface:/ {gsub(/[[:space:]]/,"",$2); print $2; exit}')
+
+    if [ -z "${route_info}" ]; then
+        rm -f "${STATE_OWNED_ROUTE}"
+        return 0
+    fi
+
+    if [ -n "${sif}" ] && [ "${sif}" != "-" ] && [ "${cur_if}" != "${sif}" ]; then
+        logger -t dslite "Default route is via ${cur_if:-unknown}, not our ${sif}; not deleting it"
+        rm -f "${STATE_OWNED_ROUTE}"
+        return 0
+    fi
+
+    if [ "${kind}" = "gw" ] && [ -n "${sgw}" ] && [ "${sgw}" != "-" ] && [ "${cur_gw}" != "${sgw}" ]; then
+        logger -t dslite "Default gateway is ${cur_gw:-unknown}, not our ${sgw}; not deleting it"
+        rm -f "${STATE_OWNED_ROUTE}"
+        return 0
+    fi
+
+    if route delete default >/dev/null 2>&1; then
+        logger -t dslite "Removed the DS-Lite default route (${kind} ${sgw} ${sif})"
+    fi
+    rm -f "${STATE_OWNED_ROUTE}"
 }

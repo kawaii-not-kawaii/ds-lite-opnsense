@@ -10,9 +10,13 @@
             <unconfigured>DS-Lite is not configured. Click to set up.</unconfigured>
             <disabled>DS-Lite is disabled.</disabled>
             <connected>Connected</connected>
+            <degraded>Degraded</degraded>
             <tunnelup>Tunnel Up</tunnelup>
             <tunneldown>Tunnel Down</tunneldown>
             <nointernet>No Internet</nointernet>
+            <checks>Failed checks</checks>
+            <dslitemode>DS-Lite</dslitemode>
+            <fixedip>Fixed IP</fixedip>
             <localv6>Local IPv6</localv6>
             <aftr>AFTR</aftr>
             <ipv4>IPv4</ipv4>

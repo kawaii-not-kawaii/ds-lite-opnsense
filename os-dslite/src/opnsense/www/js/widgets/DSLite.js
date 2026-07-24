@@ -68,7 +68,26 @@ export default class DSLite extends BaseTableWidget {
         }
 
         let statusIcon, statusText, statusClass;
-        if (t.status === 'up' && t.connectivity === 'connected') {
+
+        // An explicit health verdict always wins. A response can be up and
+        // carrying traffic while route, DNS, MTU, alias or prefix-update checks
+        // are failing; rendering that green hides exactly what the health suite
+        // exists to surface. The status/connectivity pair is only a fallback for
+        // a backend that predates the health property.
+        if (t.health === 'healthy') {
+            statusIcon = 'fa-check-circle text-success';
+            statusText = this.translations.connected;
+            statusClass = 'text-success';
+        } else if (t.health === 'degraded') {
+            const noInternet = t.connectivity === 'no internet';
+            statusIcon = noInternet ? 'fa-exclamation-circle text-warning' : 'fa-circle text-warning';
+            statusText = noInternet ? this.translations.nointernet : this.translations.degraded;
+            statusClass = 'text-warning';
+        } else if (t.health === 'offline') {
+            statusIcon = 'fa-circle text-danger';
+            statusText = t.reason || this.translations.tunneldown;
+            statusClass = 'text-danger';
+        } else if (t.status === 'up' && t.connectivity === 'connected') {
             statusIcon = 'fa-check-circle text-success';
             statusText = this.translations.connected;
             statusClass = 'text-success';
@@ -77,29 +96,37 @@ export default class DSLite extends BaseTableWidget {
             statusText = this.translations.nointernet;
             statusClass = 'text-warning';
         } else if (t.status === 'up') {
-            statusIcon = 'fa-circle text-success';
-            statusText = this.translations.tunnelup;
-            statusClass = 'text-success';
+            statusIcon = 'fa-circle text-warning';
+            statusText = this.translations.degraded;
+            statusClass = 'text-warning';
         } else {
             statusIcon = 'fa-circle text-danger';
             statusText = t.reason || this.translations.tunneldown;
             statusClass = 'text-danger';
         }
 
+        const modeLabel = (t.mode === 'fixedip') ? this.translations.fixedip : this.translations.dslitemode;
+
         let statusRow = `
             <div style="display: flex; align-items: center; gap: 8px;">
                 <i class="fa ${statusIcon}" style="font-size: 14px;"></i>
                 <span class="${statusClass}"><b>${statusText}</b></span>
+                ${t.mode ? `<span class="label label-default">${this._esc(modeLabel)}</span>` : ''}
             </div>`;
 
         let detailsRow = '';
         if (t.status === 'up') {
+            let failuresLine = '';
+            if (t.health && t.health !== 'healthy' && t.health_failures) {
+                failuresLine = `<div><small class="text-warning"><b>${this.translations.checks}:</b> ${this._esc(t.health_failures)}</small></div>`;
+            }
             detailsRow = `
                 <div style="padding: 4px 0;">
                     <div><small><b>${this.translations.localv6}:</b> ${this._esc(t.local_v6 || '-')}</small></div>
                     <div><small><b>${this.translations.aftr}:</b> ${this._esc(t.aftr || '-')}</small></div>
                     <div><small><b>${this.translations.ipv4}:</b> ${this._esc(t.ipv4 || '-')}</small></div>
                     <div><small><b>${this.translations.mtu}:</b> ${this._esc(t.mtu || '-')}</small></div>
+                    ${failuresLine}
                 </div>`;
         } else if (t.reason) {
             detailsRow = `

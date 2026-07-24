@@ -91,5 +91,15 @@
         <fixedip_auth_pass type="TextField">
             <Required>N</Required>
         </fixedip_auth_pass>
+        <!--
+            Credentials are never sent over an unverified connection by default.
+            Some Japanese ISPs (notably OCN Fixed IP) only publish a plain-HTTP
+            DynDNS-style nic/update endpoint, so this escape hatch exists; it is
+            off unless the operator deliberately accepts the exposure.
+        -->
+        <fixedip_allow_insecure type="BooleanField">
+            <Default>0</Default>
+            <Required>Y</Required>
+        </fixedip_allow_insecure>
     </items>
 </model>

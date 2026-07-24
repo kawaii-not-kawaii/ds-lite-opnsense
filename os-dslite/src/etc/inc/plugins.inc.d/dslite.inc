@@ -27,21 +27,117 @@ function dslite_enabled()
 
 function dslite_configure()
 {
+    /*
+     * Both rc.newwanip and rc.newwanipv6 call plugins_configure() for 'vpn' and
+     * for 'newwanip', each with [$interfaces, $family]. plugins_configure()
+     * slices that list to the ":N" suffix, so a callback registered at :2 never
+     * receives $family and cannot filter on it -- which is why the two hooks
+     * need separate entry points rather than one shared callback:
+     *
+     *   vpn      -> boot only; a renewal always carries a family, so reject it
+     *               here and let newwanip own it (otherwise every IPv4 renewal
+     *               would rebuild the tunnel and every IPv6 renewal would run
+     *               the work twice).
+     *   newwanip -> renewal; accept inet6, reject inet.
+     */
     return [
-        'newwanip' => ['dslite_configure_do:3'],
-        'vpn' => ['dslite_configure_do:2'],
+        'newwanip' => ['dslite_configure_renew:3'],
+        'vpn' => ['dslite_configure_boot:3'],
     ];
 }
 
-function dslite_configure_do($verbose = false)
+/*
+ * True when this event concerns the WAN the tunnel is built on. rc.newwanip
+ * passes an array of OPNsense interface names; an unrelated interface changing
+ * address must not trigger a destructive rebuild. An empty or absent list means
+ * "no interface context" (boot), which we accept.
+ */
+function dslite_affects_wan($interfaces)
+{
+    if (empty($interfaces) || !is_array($interfaces)) {
+        return true;
+    }
+
+    $model = new \OPNsense\DSLite\DSLite();
+    $wan = (string)$model->wan_interface;
+
+    return $wan === '' || in_array($wan, $interfaces);
+}
+
+function dslite_configure_run($verbose)
+{
+    service_log('Configuring DS-Lite tunnel...', $verbose);
+    configd_run('dslite configure');
+    service_log("done.\n", $verbose);
+}
+
+/* 'vpn' hook: boot-time start only. */
+function dslite_configure_boot($verbose = false, $interfaces = null, $family = null)
 {
     if (!dslite_enabled()) {
         return;
     }
 
-    service_log('Configuring DS-Lite tunnel...', $verbose);
-    configd_run('dslite configure');
-    service_log("done.\n", $verbose);
+    if ($family !== null) {
+        /* an address renewal, not a boot: dslite_configure_renew() handles it */
+        return;
+    }
+
+    dslite_configure_run($verbose);
+}
+
+/* 'newwanip' hook: react to an address renewal on the configured WAN. */
+function dslite_configure_renew($verbose = false, $interfaces = null, $family = null)
+{
+    if (!dslite_enabled()) {
+        return;
+    }
+
+    /*
+     * The WAN is IPv6-only (IPv4 = None), so the tunnel must rebuild on the
+     * inet6 renewal. Reject inet outright. A null family means an older
+     * OPNsense that did not pass one; treat that as "unknown" and run, since
+     * the configure script coalesces the duplicate against the boot call.
+     */
+    if ($family !== null && $family !== 'inet6') {
+        service_log('Skipping DS-Lite reconfigure (non-inet6 trigger).', $verbose);
+        return;
+    }
+
+    if (!dslite_affects_wan($interfaces)) {
+        service_log('Skipping DS-Lite reconfigure (unrelated interface).', $verbose);
+        return;
+    }
+
+    dslite_configure_run($verbose);
+}
+
+function dslite_cron()
+{
+    $jobs = [];
+
+    if (!dslite_enabled()) {
+        return $jobs;
+    }
+
+    $model = new \OPNsense\DSLite\DSLite();
+
+    if ((string)$model->mode !== 'fixedip') {
+        return $jobs;
+    }
+
+    if ((string)$model->fixedip_update_url === '' || (string)$model->fixedip_auth_user === '') {
+        return $jobs;
+    }
+
+    /*
+     * Keep the provider-side registration alive between reconfigurations.
+     * Must stay well below PREFIX_UPDATE_MAX_AGE in lib.sh, which is what
+     * decides when a stored result counts as stale.
+     */
+    $jobs[]['autocron'] = ['/usr/local/sbin/configctl -d dslite prefix_update', '*/30'];
+
+    return $jobs;
 }
 
 function dslite_firewall(\OPNsense\Firewall\Plugin $fw)
