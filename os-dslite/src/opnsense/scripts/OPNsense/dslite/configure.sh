@@ -181,14 +181,14 @@ else
     logger -t dslite "DS-Lite mode: local=${LOCAL_V6} aftr=${AFTR_ADDRESS}"
 fi
 
-# Tear down the existing tunnel, but only when it is ours. A gif0 belonging to
+# Tear down the existing tunnel, but only when it is ours. A gif unit belonging to
 # another consumer must not be hijacked.
 if tunnel_exists; then
     if tunnel_is_ours "${TUNNEL_IF}"; then
         logger -t dslite "Removing existing tunnel interface ${TUNNEL_IF}"
         ifconfig "${TUNNEL_IF}" destroy 2>/dev/null
     else
-        logger -t dslite "ERROR: ${TUNNEL_IF} exists but was not created by this plugin; refusing to take it over"
+        logger -t dslite "ERROR: ${TUNNEL_IF} exists but was not created by this plugin; refusing to take it over. Pick a free gif unit under Interfaces > DS-Lite (Tunnel Interface), or remove the conflicting tunnel."
         exit 1
     fi
 fi

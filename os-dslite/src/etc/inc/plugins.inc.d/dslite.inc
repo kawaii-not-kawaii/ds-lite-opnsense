@@ -173,6 +173,19 @@ function dslite_services()
     return $services;
 }
 
+/*
+ * The gif unit the tunnel is built on. Kept in sync with the shell side in
+ * lib.sh: anything that is not a plain gif unit name falls back to the default
+ * rather than being registered as an interface device.
+ */
+function dslite_tunnel_if()
+{
+    $model = new \OPNsense\DSLite\DSLite();
+    $device = (string)$model->tunnel_interface;
+
+    return preg_match('/^gif[0-9]{1,2}$/', $device) ? $device : 'gif0';
+}
+
 function dslite_interfaces()
 {
     $interfaces = [];
@@ -181,9 +194,11 @@ function dslite_interfaces()
         return $interfaces;
     }
 
+    $device = dslite_tunnel_if();
+
     $interfaces['dslite'] = [
-        'descr' => gettext('DS-Lite (gif0)'),
-        'if' => 'gif0',
+        'descr' => sprintf(gettext('DS-Lite (%s)'), $device),
+        'if' => $device,
         'virtual' => true,
         'enable' => true,
         'type' => 'gif',

@@ -53,6 +53,18 @@
             <NetMaskAllowed>N</NetMaskAllowed>
             <AddressFamily>IPv4</AddressFamily>
         </aftr_v4_address>
+        <!--
+            The gif unit the tunnel is built on. Pinned rather than allocated at
+            runtime: OPNsense registers this interface and firewall/NAT rules
+            reference it by name, so a unit that moved between reboots would
+            repoint those rules at whatever else landed on the old name.
+        -->
+        <tunnel_interface type="TextField">
+            <Default>gif0</Default>
+            <Required>Y</Required>
+            <Mask>/^gif[0-9]{1,2}$/</Mask>
+            <ValidationMessage>Must be a gif unit name, for example gif0.</ValidationMessage>
+        </tunnel_interface>
         <mtu type="IntegerField">
             <Default>1460</Default>
             <Required>Y</Required>

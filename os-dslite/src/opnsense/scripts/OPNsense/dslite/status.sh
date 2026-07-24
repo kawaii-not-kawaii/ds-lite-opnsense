@@ -78,7 +78,7 @@ if tunnel_exists; then
     # 1) Tunnel state
     [ "${status}" = "up" ] || append_failure "tunnel_state"
 
-    # 2) Default route via gif0 (DS-Lite also expects gateway AFTR_V4_ADDRESS)
+    # 2) Default route via the tunnel (DS-Lite also expects gateway AFTR_V4_ADDRESS)
     route_info=$(route -n get default 2>/dev/null)
     route_gateway=$(printf '%s' "${route_info}" | awk -F': ' '/gateway:/ {gsub(/[[:space:]]/,"",$2); print $2; exit}')
     route_iface=$(printf '%s' "${route_info}" | awk -F': ' '/interface:/ {gsub(/[[:space:]]/,"",$2); print $2; exit}')

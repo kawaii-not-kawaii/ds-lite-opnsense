@@ -32,7 +32,7 @@ wan_alias_if="-"; wan_alias_status="untested"
 
 prefix_update_target="-"; prefix_update_status="untested"; prefix_update_result="-"
 prefix_update_age="-"
-tunnel_state_status="untested"; tunnel_state_detail="gif0 not checked"
+tunnel_state_status="untested"; tunnel_state_detail="tunnel interface not checked"
 
 route_target="-"; route_gateway="-"; route_iface="-"; route_status="untested"
 mtu_expected="${MTU:-1460}"; mtu_actual="-"; mtu_status="untested"

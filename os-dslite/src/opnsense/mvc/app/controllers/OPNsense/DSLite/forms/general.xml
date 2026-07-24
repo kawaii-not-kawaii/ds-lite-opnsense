@@ -50,6 +50,13 @@
         <advanced>true</advanced>
     </field>
     <field>
+        <id>dslite.tunnel_interface</id>
+        <label>Tunnel Interface</label>
+        <type>text</type>
+        <help>The gif unit the tunnel is built on. Default gif0. Change this only if another GIF tunnel already holds that unit — the plugin refuses to take over an interface it did not create, and logs which unit is in the way.</help>
+        <advanced>true</advanced>
+    </field>
+    <field>
         <id>dslite.mtu</id>
         <label>MTU</label>
         <type>text</type>

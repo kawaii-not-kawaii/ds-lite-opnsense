@@ -3,6 +3,12 @@
 # DS-Lite shared library functions
 # Reads configuration from OPNsense XML config
 
+# Default tunnel unit. get_config() replaces this with the configured one.
+# It is deliberately a fixed unit rather than one allocated by
+# "ifconfig gif create": OPNsense registers this interface and firewall/NAT
+# rules reference it by name, so a unit that changes across reboots would
+# silently repoint those rules at another device. Collisions are detected and
+# reported instead (see tunnel_is_ours), and the admin picks a free unit.
 TUNNEL_IF="gif0"
 CONFIG_XML="/conf/config.xml"
 
@@ -174,6 +180,15 @@ get_config() {
     MSS_CLAMP=$(config_get "//OPNsense/dslite/mss_clamp")
     NAT_ENABLED=$(config_get "//OPNsense/dslite/nat_enabled")
     FIXEDIP_ALLOW_INSECURE=$(config_get "//OPNsense/dslite/fixedip_allow_insecure")
+
+    # Tunnel unit. Anything that is not a plain gif unit name falls back to the
+    # default rather than reaching ifconfig, so a malformed config value cannot
+    # turn into an argument we did not intend.
+    TUNNEL_IF=$(config_get "//OPNsense/dslite/tunnel_interface")
+    case "${TUNNEL_IF}" in
+        gif[0-9]|gif[0-9][0-9]) ;;
+        *) TUNNEL_IF="gif0" ;;
+    esac
 
     # Defaults
     B4_ADDRESS="${B4_ADDRESS:-192.0.0.2}"
