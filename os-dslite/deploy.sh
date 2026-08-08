@@ -81,6 +81,15 @@ echo "  -> Flushing UI caches..."
 ssh "${OPNSENSE_USER}@${OPNSENSE_HOST}" "rm -rf /tmp/opnsense_*cache* 2>/dev/null; \
     configctl template reload OPNsense/DSLite 2>/dev/null; true"
 
+# Re-register cron. A package install runs post-install hooks that rebuild the
+# crontab from dslite_cron(); copying files does not. Without this the periodic
+# prefix update silently never runs, which surfaces later as a "prefix_update_stale"
+# health failure rather than as a deploy error.
+# Wrapped in sh -c: root's shell on OPNsense is csh, which does not understand
+# Bourne redirections such as 2>&1 and fails the command outright.
+echo "  -> Re-registering cron jobs..."
+ssh "${OPNSENSE_USER}@${OPNSENSE_HOST}" "sh -c 'configctl cron restart >/dev/null 2>&1 || true'"
+
 echo ""
 echo "Deploy complete! Access the plugin at:"
 echo "  https://${OPNSENSE_HOST}/ui/dslite/general"
