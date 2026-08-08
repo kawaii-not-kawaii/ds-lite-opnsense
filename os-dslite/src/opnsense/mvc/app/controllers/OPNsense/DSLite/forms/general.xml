@@ -15,7 +15,7 @@
         <id>dslite.isp_profile</id>
         <label>ISP Profile</label>
         <type>dropdown</type>
-        <help>Select your ISP service. This sets the correct AFTR address automatically. Only used in DS-Lite mode.</help>
+        <help>Select your ISP service. In DS-Lite mode this sets the AFTR address automatically. In Fixed IP mode it also selects how the provider's Interface ID is mapped into the tunnel address: transix supplies it as the low 64 bits, others as a subnet selector. Leave on Auto to detect from the delegated prefix.</help>
     </field>
     <field>
         <id>dslite.wan_interface</id>

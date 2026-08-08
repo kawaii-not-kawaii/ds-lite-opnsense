@@ -393,10 +393,28 @@ get_wan_ipv6() {
 # value under both readings, so the input itself cannot disambiguate.
 # ---------------------------------------------------------------------------
 fixedip_iid_placement() {
+    local pd detected
+
     case "${ISP_PROFILE}" in
-        transix) echo "host" ;;
-        *)       echo "subnet" ;;
+        transix) echo "host" ; return ;;
+        auto)    ;;
+        *)       echo "subnet" ; return ;;
     esac
+
+    # "auto" is the default the operator gets by never touching the dropdown,
+    # so it must not quietly resolve to the wrong reading. Reuse the prefix
+    # table that already drives AFTR auto-detection: if the delegated prefix
+    # belongs to transix, the ID is a host IID.
+    pd=$(get_pd_prefix)
+    if [ -n "${pd}" ]; then
+        detected=$(detect_aftr_from_prefix "${pd}")
+        if [ "${detected}" = "${AFTR_TRANSIX}" ]; then
+            echo "host"
+            return
+        fi
+    fi
+
+    echo "subnet"
 }
 
 # Derive the tunnel-local (CE) IPv6 address from the provider's Interface ID.

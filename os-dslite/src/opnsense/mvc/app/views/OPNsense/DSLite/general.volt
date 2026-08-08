@@ -27,8 +27,13 @@
         'custom': { 'hostname': '', 'address': '', 'readonly': false }
     };
 
-    // Fields that belong to each mode
-    var dsliteFields = ['dslite\\.isp_profile', 'dslite\\.aftr_hostname', 'dslite\\.aftr_address'];
+    // Fields that belong to each mode.
+    //
+    // isp_profile is deliberately NOT here: it applies to both modes. In
+    // DS-Lite it selects the AFTR, in Fixed IP it selects how the provider's
+    // Interface ID maps into the CE address. Hiding it under Fixed IP made the
+    // field that decides whether the tunnel passes traffic invisible.
+    var dsliteFields = ['dslite\\.aftr_hostname', 'dslite\\.aftr_address'];
     var fixedipFields = ['dslite\\.fixedip_interface_id', 'dslite\\.fixedip_aftr', 'dslite\\.fixedip_v4',
                          'dslite\\.fixedip_update_url', 'dslite\\.fixedip_auth_user', 'dslite\\.fixedip_auth_pass'];
 
