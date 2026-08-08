@@ -204,8 +204,10 @@ if [ "${MODE}" = "fixedip" ] && [ -n "${FIXEDIP_UPDATE_URL}" ] && [ -n "${FIXEDI
         prefix_update_result="${pu_code:--}"
 
         if [ "${pu_rc}" = "0" ]; then
+            # Two response vocabularies are in play: the DynDNS-style endpoints
+            # answer good/nochg, transix answers OK (and NG on failure).
             case "${pu_code}" in
-                good|nochg) prefix_update_status="ok" ;;
+                good|nochg|OK|ok) prefix_update_status="ok" ;;
                 *) prefix_update_status="ng" ;;
             esac
         else

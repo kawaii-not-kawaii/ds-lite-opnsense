@@ -126,7 +126,7 @@ if [ "${TUNNEL_MODE}" = "fixedip" ]; then
     if [ -n "${FIXEDIP_UPDATE_URL}" ] && [ -n "${FIXEDIP_AUTH_USER}" ]; then
         logger -t dslite "Sending prefix update to ${FIXEDIP_UPDATE_URL}"
         UPDATE_RESULT=$(dslite_authed_get "${FIXEDIP_UPDATE_URL}" "${FIXEDIP_AUTH_USER}" \
-            "${FIXEDIP_AUTH_PASS}" "${FIXEDIP_ALLOW_INSECURE}")
+            "${FIXEDIP_AUTH_PASS}" "${FIXEDIP_ALLOW_INSECURE}" "${LOCAL_V6}")
         UPDATE_RC=$?
         UPDATE_CODE=$(printf '%s' "${UPDATE_RESULT}" | awk '{print $1; exit}')
         write_prefix_update_state "${UPDATE_RC}" "${UPDATE_CODE}"

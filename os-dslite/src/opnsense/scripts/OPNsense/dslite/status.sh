@@ -118,8 +118,9 @@ if tunnel_exists; then
             if [ "${prc}" != "0" ]; then
                 append_failure "prefix_update"
             else
+                # DynDNS-style endpoints answer good/nochg; transix answers OK.
                 case "${pcode}" in
-                    good|nochg) : ;;
+                    good|nochg|OK|ok) : ;;
                     *) append_failure "prefix_update" ;;
                 esac
             fi

@@ -392,29 +392,55 @@ get_wan_ipv6() {
 # Keyed off the ISP profile rather than sniffed from the ID: ::feed is a legal
 # value under both readings, so the input itself cannot disambiguate.
 # ---------------------------------------------------------------------------
-fixedip_iid_placement() {
+# Which provider's conventions apply. transix differs from the v6 Connect
+# family in more than one place -- the Interface ID reading and the update
+# server's auth transport -- so resolve it once and derive both from it.
+fixedip_provider() {
     local pd detected
 
     case "${ISP_PROFILE}" in
-        transix) echo "host" ; return ;;
+        transix) echo "transix" ; return ;;
         auto)    ;;
-        *)       echo "subnet" ; return ;;
+        *)       echo "generic" ; return ;;
     esac
 
     # "auto" is the default the operator gets by never touching the dropdown,
-    # so it must not quietly resolve to the wrong reading. Reuse the prefix
-    # table that already drives AFTR auto-detection: if the delegated prefix
-    # belongs to transix, the ID is a host IID.
+    # so it must not quietly resolve to the wrong provider. Reuse the prefix
+    # table that already drives AFTR auto-detection.
     pd=$(get_pd_prefix)
     if [ -n "${pd}" ]; then
         detected=$(detect_aftr_from_prefix "${pd}")
         if [ "${detected}" = "${AFTR_TRANSIX}" ]; then
-            echo "host"
+            echo "transix"
             return
         fi
     fi
 
-    echo "subnet"
+    echo "generic"
+}
+
+fixedip_iid_placement() {
+    if [ "$(fixedip_provider)" = "transix" ]; then
+        echo "host"
+    else
+        echo "subnet"
+    fi
+}
+
+# How the update server expects credentials.
+#
+#   query  transix takes them as URL parameters and identifies the CE from the
+#          request's source address. It answers 400/"NG" to anything else --
+#          notably it never issues a 401, so challenge-response auth silently
+#          never sends the credentials at all.
+#
+#   basic  RFC 7617 via netrc, which is what the v6 Connect family uses.
+fixedip_auth_style() {
+    if [ "$(fixedip_provider)" = "transix" ]; then
+        echo "query"
+    else
+        echo "basic"
+    fi
 }
 
 # Derive the tunnel-local (CE) IPv6 address from the provider's Interface ID.
@@ -587,7 +613,7 @@ get_expected_aftr() {
 # Credentials go through a mode-0600 netrc so they never appear in argv, and
 # certificate verification is never disabled for an https:// endpoint.
 dslite_authed_get() {
-    local url="$1" user="$2" pass="$3" allow="$4"
+    local url="$1" user="$2" pass="$3" allow="$4" source_addr="$5"
     local netrc out rc
 
     [ -n "${url}" ] || return 2
@@ -605,18 +631,52 @@ dslite_authed_get() {
             ;;
     esac
 
-    netrc=$(umask 077; mktemp /tmp/dslite-netrc.XXXXXX) || return 2
-    chmod 600 "${netrc}"
-    printf 'default\nlogin %s\npassword %s\n' "${user}" "${pass}" > "${netrc}"
-
     # --max-time bounds a server that accepts the connection and then stalls;
     # --connect-timeout alone does not.
-    out=$(curl -6 -s --connect-timeout 5 --max-time 20 --netrc-file "${netrc}" "${url}" 2>&1)
-    rc=$?
-    rm -f "${netrc}"
+    #
+    # source_addr binds the request to the CE address. transix derives the
+    # registration from the source address, so an unbound request would either
+    # be rejected or register the wrong address; harmless for providers that
+    # ignore it.
+    if [ "$(fixedip_auth_style)" = "query" ]; then
+        out=$(curl -6 -s --connect-timeout 5 --max-time 20 \
+              ${source_addr:+--interface "${source_addr}"} \
+              "${url}?username=$(urlencode "${user}")&password=$(urlencode "${pass}")" 2>&1)
+        rc=$?
+    else
+        netrc=$(umask 077; mktemp /tmp/dslite-netrc.XXXXXX) || return 2
+        chmod 600 "${netrc}"
+        printf 'default\nlogin %s\npassword %s\n' "${user}" "${pass}" > "${netrc}"
+
+        out=$(curl -6 -s --connect-timeout 5 --max-time 20 \
+              ${source_addr:+--interface "${source_addr}"} \
+              --netrc-file "${netrc}" "${url}" 2>&1)
+        rc=$?
+        rm -f "${netrc}"
+    fi
 
     printf '%s' "${out}"
     return ${rc}
+}
+
+# Percent-encode a credential for use in a query string. Passwords are operator
+# supplied and may legitimately contain & or =, which would otherwise be parsed
+# as parameter separators and silently corrupt the request.
+urlencode() {
+    local s="$1" out="" c
+
+    # Kept to shell builtins on purpose: FreeBSD awk has no strtonum(), and
+    # this runs on a base system with no scripting dependencies guaranteed.
+    while [ -n "${s}" ]; do
+        c=${s%"${s#?}"}
+        s=${s#?}
+        case "${c}" in
+            [A-Za-z0-9._~-]) out="${out}${c}" ;;
+            *)               out="${out}$(printf '%%%02X' "'${c}")" ;;
+        esac
+    done
+
+    printf '%s' "${out}"
 }
 
 # Record a prefix-update outcome for the status/diagnostics pages.
