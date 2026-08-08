@@ -360,10 +360,20 @@ nat on ${TUNNEL_IF} from any to any -> (${TUNNEL_IF})
 NATEOF
     fi
 
+    # Clamp TCP MSS to what the tunnel can actually carry.
+    #
+    # Without this, a LAN client on a 1500-byte link advertises MSS 1460, the
+    # far end sends 1500-byte segments, and they do not fit the tunnel. Recovery
+    # depends on PMTUD, which fails whenever the path filters ICMP -- and enough
+    # large providers do that the failure is common rather than exotic. The
+    # symptom is the confusing one: handshakes succeed and connections then
+    # stall, so the host looks reachable while nothing transfers.
+    #
+    # Clamping on the tunnel fixes it for every client without touching them.
     FW_FILE="/tmp/dslite_fw.conf"
     cat > "${FW_FILE}" << FWEOF
-pass out quick on ${TUNNEL_IF} all keep state
-pass in quick on ${TUNNEL_IF} all keep state
+pass out quick on ${TUNNEL_IF} all scrub (max-mss ${MSS_CLAMP}) keep state
+pass in quick on ${TUNNEL_IF} all scrub (max-mss ${MSS_CLAMP}) keep state
 FWEOF
 
     # Load into OPNsense's registered anchors
