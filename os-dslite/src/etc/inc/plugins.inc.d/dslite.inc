@@ -196,10 +196,28 @@ function dslite_interfaces()
 
     $device = dslite_tunnel_if();
 
+    /*
+     * Deliberately not virtual. Virtual is for group pseudo-interfaces such as
+     * OpenVPN's and WireGuard's; the tunnel is a routable device, so the matching
+     * precedent is IPsec's VTI registration. Marking it virtual excludes it from
+     * InterfaceField's option list and from Gateways::getDefinedInterfaces(), which
+     * makes it impossible to give the tunnel a gateway at all -- and without a
+     * gateway there is no monitoring and no failover to a second WAN.
+     *
+     * The property has to be present and false rather than simply omitted:
+     * plugins_interfaces() diffs only the properties a registration supplies and
+     * never removes the ones it drops, so an omitted key would leave a stale
+     * <virtual>1</virtual> behind in existing configurations.
+     *
+     * Safe because this registration carries no addressing: interface_configure()
+     * flushes addresses only when ipaddr/ipaddrv6 are set and resets the MTU only
+     * when mtu is set, so OPNsense will not disturb the address or the 1460-byte
+     * MTU that configure.sh puts on the tunnel.
+     */
     $interfaces['dslite'] = [
         'descr' => sprintf(gettext('DS-Lite (%s)'), $device),
         'if' => $device,
-        'virtual' => true,
+        'virtual' => false,
         'enable' => true,
         'type' => 'gif',
     ];
