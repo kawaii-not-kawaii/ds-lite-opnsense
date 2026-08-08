@@ -23,6 +23,11 @@ STATE_OWNED_IF="/var/run/dslite_owned_tunnel"           # "<ifname> <local_v6> <
 STATE_OWNED_ROUTE="/var/run/dslite_owned_route"         # "<iface|gw> <gateway|-> <ifname>"
 STATE_PREFIX_UPDATE="/var/run/dslite_prefix_update_status"  # "<epoch> <rc> <code>"
 
+# Deliberately NOT under /var/run: this records provider-side state, which
+# outlives a reboot. Losing it only costs one redundant registration, so /var/db
+# is the right trade even where RAM disks make it volatile.
+STATE_LAST_CE="/var/db/dslite_last_ce"                  # "<ce address>"
+
 # Maximum age of a prefix-update result before health reports it as stale.
 # Must be comfortably larger than the cron interval in dslite_cron().
 PREFIX_UPDATE_MAX_AGE=5400
@@ -677,6 +682,47 @@ urlencode() {
     done
 
     printf '%s' "${out}"
+}
+
+# Register the CE address with the provider, but only when it actually changed.
+#
+# The provider binds the fixed IPv4 to whatever CE it last saw, so re-sending an
+# unchanged address achieves nothing and only spends quota against the update
+# server. The periodic job runs every 30 minutes; without this guard that is ~48
+# registrations a day for a value that changes on the order of never.
+#
+# Usage: fixedip_register_if_changed <url> <user> <pass> <allow_insecure> <ce>
+fixedip_register_if_changed() {
+    local url="$1" user="$2" pass="$3" allow="$4" ce="$5"
+    local last out rc code
+
+    [ -n "${url}" ] && [ -n "${user}" ] || return 0
+
+    last=$(cat "${STATE_LAST_CE}" 2>/dev/null)
+    if [ -n "${ce}" ] && [ "${ce}" = "${last}" ]; then
+        # Still stamp the result. Health ages the stored outcome out and reports
+        # "stale" past PREFIX_UPDATE_MAX_AGE, so a deliberately skipped call must
+        # not be indistinguishable from an updater that has stopped running.
+        write_prefix_update_state 0 "nochg"
+        return 0
+    fi
+
+    logger -t dslite "CE changed (${last:-none} -> ${ce}), registering with ${url}"
+    out=$(dslite_authed_get "${url}" "${user}" "${pass}" "${allow}" "${ce}")
+    rc=$?
+    code=$(printf '%s' "${out}" | awk '{print $1; exit}')
+    write_prefix_update_state "${rc}" "${code}"
+    logger -t dslite "Prefix update response: ${out}"
+
+    # Only remember a CE the provider actually accepted, so a failure retries on
+    # the next tick instead of being latched as done.
+    if [ "${rc}" = "0" ]; then
+        case "${code}" in
+            good|nochg|OK|ok) printf '%s\n' "${ce}" > "${STATE_LAST_CE}" ;;
+        esac
+    fi
+
+    return ${rc}
 }
 
 # Record a prefix-update outcome for the status/diagnostics pages.

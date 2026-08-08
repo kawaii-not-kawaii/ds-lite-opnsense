@@ -121,17 +121,12 @@ if [ "${TUNNEL_MODE}" = "fixedip" ]; then
     fi
     sleep 1
 
-    # Refresh the provider-side prefix registration. Credentials go via a
-    # mode-0600 netrc and are never sent over an unverified connection.
-    if [ -n "${FIXEDIP_UPDATE_URL}" ] && [ -n "${FIXEDIP_AUTH_USER}" ]; then
-        logger -t dslite "Sending prefix update to ${FIXEDIP_UPDATE_URL}"
-        UPDATE_RESULT=$(dslite_authed_get "${FIXEDIP_UPDATE_URL}" "${FIXEDIP_AUTH_USER}" \
-            "${FIXEDIP_AUTH_PASS}" "${FIXEDIP_ALLOW_INSECURE}" "${LOCAL_V6}")
-        UPDATE_RC=$?
-        UPDATE_CODE=$(printf '%s' "${UPDATE_RESULT}" | awk '{print $1; exit}')
-        write_prefix_update_state "${UPDATE_RC}" "${UPDATE_CODE}"
-        logger -t dslite "Prefix update response: ${UPDATE_RESULT}"
-    fi
+    # Refresh the provider-side registration, but only if the CE actually moved.
+    # A reconfigure is not evidence that it did: the tunnel is rebuilt on every
+    # WAN renewal, and the delegated prefix usually survives those unchanged.
+    # Credentials never go over an unverified connection.
+    fixedip_register_if_changed "${FIXEDIP_UPDATE_URL}" "${FIXEDIP_AUTH_USER}" \
+        "${FIXEDIP_AUTH_PASS}" "${FIXEDIP_ALLOW_INSECURE}" "${LOCAL_V6}"
 
     logger -t dslite "Fixed IP mode: local=${LOCAL_V6} aftr=${AFTR_ADDRESS} ipv4=${B4_ADDRESS}"
 elif [ "${TUNNEL_MODE}" = "mape" ]; then

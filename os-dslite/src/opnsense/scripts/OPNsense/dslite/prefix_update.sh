@@ -35,11 +35,9 @@ fi
 # the request arrives from, so an unbound request can register the wrong one.
 CE_ADDR=$(fixedip_local_v6 "$(config_get "//OPNsense/dslite/fixedip_interface_id")")
 
-RESULT=$(dslite_authed_get "${UPDATE_URL}" "${AUTH_USER}" "${AUTH_PASS}" "${FIXEDIP_ALLOW_INSECURE}" "${CE_ADDR}")
-RC=$?
-CODE=$(printf '%s' "${RESULT}" | awk '{print $1; exit}')
-
-write_prefix_update_state "${RC}" "${CODE}"
-logger -t dslite "Periodic prefix update: rc=${RC} ${RESULT}"
+# No-op when the CE is unchanged, which is the overwhelmingly common case for a
+# job that runs every 30 minutes.
+fixedip_register_if_changed "${UPDATE_URL}" "${AUTH_USER}" "${AUTH_PASS}" \
+    "${FIXEDIP_ALLOW_INSECURE}" "${CE_ADDR}"
 
 exit 0
