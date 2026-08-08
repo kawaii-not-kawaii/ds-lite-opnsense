@@ -318,23 +318,58 @@ logger -t dslite "Tunnel ${TUNNEL_IF} created via ${AFTR_ADDRESS}"
 # Install the default IPv4 route through the tunnel. Our own previous route is
 # withdrawn first; "route change" then adjusts an existing foreign route in
 # place rather than blindly deleting whatever is in the table.
-remove_owned_default_route
-if [ "${TUNNEL_P2P}" = "1" ]; then
-    # For IPIP tunnel, route via the tunnel interface directly
-    if route add default -interface "${TUNNEL_IF}" 2>/dev/null ||
-       route change default -interface "${TUNNEL_IF}" 2>/dev/null; then
-        record_owned_route "iface" "-" "${TUNNEL_IF}"
-        logger -t dslite "Default IPv4 route set via ${TUNNEL_IF}"
+#
+# When OPNsense has a gateway on the tunnel it maintains the default route too,
+# and the only job left here is to make sure one exists at all: rebuilding the
+# tunnel drops every route through it, and at boot OPNsense configures routing
+# before the tunnel exists. So fill a vacuum, using the gateway's own address so
+# that the route matches what OPNsense would install and survives its next pass.
+#
+# Never overwrite a default route that is already there. It is either the one
+# OPNsense installed, or -- after a failover -- the second WAN's, and stealing
+# that one back would undo the failover this gateway exists to enable.
+OPNSENSE_GW=$(opnsense_gateway_address)
+if [ -n "${OPNSENSE_GW}" ]; then
+    if [ -n "$(route -n get default 2>/dev/null)" ]; then
+        rm -f "${STATE_OWNED_ROUTE}"
+        logger -t dslite "A default IPv4 route is already present; leaving it to OPNsense"
+    elif route add default "${OPNSENSE_GW}" 2>/dev/null; then
+        record_owned_route "gw" "${OPNSENSE_GW}" "${TUNNEL_IF}"
+        logger -t dslite "Default IPv4 route set via ${OPNSENSE_GW} to match the OPNsense gateway on ${TUNNEL_IF}"
     else
-        logger -t dslite "WARNING: Failed to add default route via ${TUNNEL_IF}"
+        logger -t dslite "WARNING: Failed to add default route via ${OPNSENSE_GW}"
+    fi
+
+    # dpinger's monitor route went down with the old tunnel. Put it back, or its
+    # probes follow the default route and report on whichever WAN owns it.
+    OPNSENSE_MON=$(opnsense_gateway_monitor)
+    if [ -n "${OPNSENSE_MON}" ]; then
+        route delete -host -inet "${OPNSENSE_MON}" >/dev/null 2>&1
+        if route add -host -inet "${OPNSENSE_MON}" "${OPNSENSE_GW}" >/dev/null 2>&1; then
+            logger -t dslite "Monitor host route ${OPNSENSE_MON} via ${OPNSENSE_GW} restored"
+        else
+            logger -t dslite "WARNING: Failed to restore monitor host route ${OPNSENSE_MON}"
+        fi
     fi
 else
-    if route add default "${AFTR_V4_ADDRESS}" 2>/dev/null ||
-       route change default "${AFTR_V4_ADDRESS}" 2>/dev/null; then
-        record_owned_route "gw" "${AFTR_V4_ADDRESS}" "${TUNNEL_IF}"
-        logger -t dslite "Default IPv4 route set via ${AFTR_V4_ADDRESS}"
+    remove_owned_default_route
+    if [ "${TUNNEL_P2P}" = "1" ]; then
+        # For IPIP tunnel, route via the tunnel interface directly
+        if route add default -interface "${TUNNEL_IF}" 2>/dev/null ||
+           route change default -interface "${TUNNEL_IF}" 2>/dev/null; then
+            record_owned_route "iface" "-" "${TUNNEL_IF}"
+            logger -t dslite "Default IPv4 route set via ${TUNNEL_IF}"
+        else
+            logger -t dslite "WARNING: Failed to add default route via ${TUNNEL_IF}"
+        fi
     else
-        logger -t dslite "WARNING: Failed to add default route via ${AFTR_V4_ADDRESS}"
+        if route add default "${AFTR_V4_ADDRESS}" 2>/dev/null ||
+           route change default "${AFTR_V4_ADDRESS}" 2>/dev/null; then
+            record_owned_route "gw" "${AFTR_V4_ADDRESS}" "${TUNNEL_IF}"
+            logger -t dslite "Default IPv4 route set via ${AFTR_V4_ADDRESS}"
+        else
+            logger -t dslite "WARNING: Failed to add default route via ${AFTR_V4_ADDRESS}"
+        fi
     fi
 fi
 

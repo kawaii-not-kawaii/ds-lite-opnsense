@@ -888,6 +888,54 @@ tunnel_is_ours() {
     [ "${TUN_REMOTE}" = "${expected_aftr}" ]
 }
 
+# The address of the IPv4 gateway OPNsense has on the tunnel interface, empty
+# when there is none.
+#
+# Giving the tunnel a gateway under System > Gateways is what makes monitoring
+# and failover to a second WAN possible, and it makes OPNsense want to maintain
+# the IPv4 default route itself. The two must agree on the route's shape or they
+# overwrite each other on every interface event: system_default_route() compares
+# the gateway address of the installed route against the one it wants, so a
+# route installed as "via this interface" never matches and is replaced, while
+# one installed via this address matches and is left alone.
+#
+# Standing aside entirely is not an option: at boot rc.bootup runs
+# system_routing_configure() before the 'vpn' hook that builds the tunnel, so
+# OPNsense refuses the gateway as addressless and installs nothing. If the
+# plugin also installed nothing the box would come up without a default route.
+#
+# 'dslite' is the interface key this plugin registers in dslite_interfaces();
+# the gateway_item stores that key rather than the device name.
+OPNSENSE_GW_XPATH="/opnsense/OPNsense/Gateways/gateway_item[interface='dslite'][ipprotocol='inet'][not(disabled='1')]"
+
+opnsense_gateway_address() {
+    config_get "${OPNSENSE_GW_XPATH}/gateway"
+}
+
+# The address dpinger monitors for that gateway, empty when no host route for it
+# is wanted.
+#
+# dpinger reaches its monitor over a host route pinned to the gateway. Without
+# it the probes follow the default route instead, which after a failover is a
+# different WAN entirely: the tunnel would be reported up because some other
+# link answered, and it would never fail back. Rebuilding the tunnel drops that
+# route along with everything else through the device, so it has to be put back.
+#
+# Mirrors dpinger's own conditions -- no route when monitoring is off, when
+# monitor_noroute is set, or when the monitor is the gateway itself.
+opnsense_gateway_monitor() {
+    local monitor
+
+    [ "$(config_get "${OPNSENSE_GW_XPATH}/monitor_noroute")" = "1" ] && return 0
+    [ "$(config_get "${OPNSENSE_GW_XPATH}/monitor_disable")" = "1" ] && return 0
+
+    monitor=$(config_get "${OPNSENSE_GW_XPATH}/monitor")
+    [ -n "${monitor}" ] || return 0
+    [ "${monitor}" = "$(opnsense_gateway_address)" ] && return 0
+
+    printf '%s' "${monitor}"
+}
+
 # Delete the default route only when it is still the one we installed.
 # A route that has since moved elsewhere belongs to the system again.
 remove_owned_default_route() {
