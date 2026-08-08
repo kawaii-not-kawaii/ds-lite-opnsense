@@ -83,30 +83,32 @@ if [ "${TUNNEL_MODE}" = "fixedip" ]; then
     B4_ADDRESS="${FIXEDIP_V4}"
     AFTR_V4_ADDRESS=""
 
-    # The Interface ID needs to be combined with the PD prefix to form
-    # a full routable IPv6 address for the tunnel source.
-    # Asahi Net provides the Interface ID as the host portion.
-    PD_PREFIX=$(get_pd_prefix)
-    if [ -n "${PD_PREFIX}" ] && command -v python3 >/dev/null 2>&1; then
-        # Combine prefix + interface ID using python for reliable IPv6 math
-        # The interface ID must be shifted to align with the prefix boundary
-        # For /56 prefix: shift left 8 bits; for /64: no shift; etc.
-        LOCAL_V6=$(python3 -c "
-import sys, ipaddress
-prefix = ipaddress.ip_network(sys.argv[1], strict=False)
-iface_id = int(ipaddress.ip_address(sys.argv[2]))
-shift = 64 - prefix.prefixlen
-if shift > 0:
-    iface_id = iface_id << shift
-combined = int(prefix.network_address) | iface_id
-print(str(ipaddress.ip_address(combined)))
-" "${PD_PREFIX}" "${FIXEDIP_INTERFACE_ID}" 2>/dev/null)
+    # Combine the provider's Interface ID with our prefix to form the routable
+    # tunnel source. How the ID maps in is provider-specific; see
+    # fixedip_iid_placement() in lib.sh for why this cannot be inferred.
+    #
+    # The anchor does not exist yet at boot -- DHCPv6 and PD land after the
+    # interface is up -- and deriving early would produce a CE the AFTR refuses
+    # while the tunnel still comes up, i.e. a silent blackhole. Retry on the
+    # same cadence as the DS-Lite and MAP-E branches.
+    LOCAL_V6=$(fixedip_local_v6 "${FIXEDIP_INTERFACE_ID}")
+    if [ -z "${LOCAL_V6}" ]; then
+        for attempt in 1 2 3 4 5 6; do
+            logger -t dslite "Waiting for IPv6 prefix delegation (attempt ${attempt}/6)..."
+            sleep 5
+            LOCAL_V6=$(fixedip_local_v6 "${FIXEDIP_INTERFACE_ID}")
+            [ -n "${LOCAL_V6}" ] && break
+        done
     fi
 
-    # Fallback: if no prefix available, use the Interface ID as-is
-    # (user may have entered a full address)
+    # Fallback: no prefix available yet, or no python3. The operator may also
+    # have entered a full address rather than an ID, in which case this is
+    # already correct.
     if [ -z "${LOCAL_V6}" ]; then
         LOCAL_V6="${FIXEDIP_INTERFACE_ID}"
+        logger -t dslite "Could not derive CE address from Interface ID; using ${LOCAL_V6} verbatim"
+    else
+        logger -t dslite "CE address ${LOCAL_V6} derived from Interface ID ${FIXEDIP_INTERFACE_ID} ($(fixedip_iid_placement) placement)"
     fi
 
     # Assign/refresh the tunnel-local /128 on WAN, cleaning up any stale alias.

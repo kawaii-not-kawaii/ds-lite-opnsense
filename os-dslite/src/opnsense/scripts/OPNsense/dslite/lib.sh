@@ -373,6 +373,91 @@ get_wan_ipv6() {
         head -1 | awk '{print $2}' | sed 's/%.*$//'
 }
 
+# ---------------------------------------------------------------------------
+# Fixed IP: how the provider's "Interface ID" maps into the CE address.
+#
+# Two incompatible readings exist among the VNEs, and choosing the wrong one
+# produces an address the AFTR rejects with ICMPv6 destination unreachable
+# code 5 (source address failed ingress/egress policy). The tunnel still comes
+# up, so this presents as a silent blackhole rather than a configuration error.
+#
+#   host    The ID is the low 64 bits of the CE, OR'd into the /64 the WAN sits
+#           in. transix documents it this way: the registration mail gives
+#           "::feed or 0000:0000:0000:feed" -- four groups, exactly 64 bits.
+#
+#   subnet  The ID is a subnet selector aligned to the delegated prefix
+#           boundary (shifted left by 64 - prefixlen). Original behaviour, kept
+#           as the default so existing deployments are untouched.
+#
+# Keyed off the ISP profile rather than sniffed from the ID: ::feed is a legal
+# value under both readings, so the input itself cannot disambiguate.
+# ---------------------------------------------------------------------------
+fixedip_iid_placement() {
+    case "${ISP_PROFILE}" in
+        transix) echo "host" ;;
+        *)       echo "subnet" ;;
+    esac
+}
+
+# Derive the tunnel-local (CE) IPv6 address from the provider's Interface ID.
+# Echoes nothing when it cannot be computed; the caller decides the fallback.
+fixedip_local_v6() {
+    local iid="$1"
+    local placement base
+
+    [ -n "${iid}" ] || return 1
+    command -v python3 >/dev/null 2>&1 || return 1
+
+    placement=$(fixedip_iid_placement)
+
+    if [ "${placement}" = "host" ]; then
+        # Anchor on the WAN's own /64: that is the prefix the AFTR expects
+        # traffic to be sourced from and what the provider-side registration
+        # binds to. The delegated prefix is only a fallback for the first-boot
+        # ordering case where the WAN has no global address yet.
+        base=$(get_wan_ipv6)
+        [ -n "${base}" ] || base=$(get_pd_prefix)
+        [ -n "${base}" ] || return 1
+    else
+        base=$(get_pd_prefix)
+        [ -n "${base}" ] || return 1
+    fi
+
+    python3 -c '
+import sys, ipaddress
+
+base, iid_s, placement = sys.argv[1], sys.argv[2], sys.argv[3]
+
+def parse_iid(s):
+    try:
+        return int(ipaddress.ip_address(s))
+    except ValueError:
+        # Providers also print the ID as bare low-64 groups rather than a
+        # compressed address -- transix gives "::feed or 0000:0000:0000:feed".
+        # Anchor the bare form at the low end so both spellings agree.
+        return int(ipaddress.ip_address("::" + s.lstrip(":")))
+
+iid = parse_iid(iid_s)
+
+if placement == "host":
+    # Accept either an address or a prefix as the anchor.
+    if "/" in base:
+        anchor = int(ipaddress.ip_network(base, strict=False).network_address)
+    else:
+        anchor = int(ipaddress.ip_address(base))
+    mask64 = (1 << 64) - 1
+    combined = (anchor >> 64 << 64) | (iid & mask64)
+else:
+    prefix = ipaddress.ip_network(base, strict=False)
+    shift = 64 - prefix.prefixlen
+    if shift > 0:
+        iid = iid << shift
+    combined = int(prefix.network_address) | iid
+
+print(str(ipaddress.ip_address(combined)))
+' "${base}" "${iid}" "${placement}" 2>/dev/null
+}
+
 # Get DHCPv6-PD prefix from OPNsense temp files or interface addresses
 get_pd_prefix() {
     local wan_if
