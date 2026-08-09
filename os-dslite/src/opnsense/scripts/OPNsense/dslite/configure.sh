@@ -405,10 +405,22 @@ NATEOF
     # stall, so the host looks reachable while nothing transfers.
     #
     # Clamping on the tunnel fixes it for every client without touching them.
+    #
+    # "match", never "pass". match applies the scrub and lets evaluation carry on
+    # to the real ruleset; pass makes a filtering decision, and with "quick" it
+    # short-circuits everything after it. This anchor previously used
+    # "pass in quick ... all", which passed every inbound packet arriving on the
+    # tunnel and silently disabled WAN filtering altogether: the firewall's
+    # default deny never ran, port forwards worked without any accompanying
+    # filter rule, and every service bound to 0.0.0.0 -- sshd, the web GUI,
+    # AdGuard on :53, ntpd -- was reachable from the internet on the public
+    # address. Observed in the wild as established inbound SSH sessions from
+    # unknown hosts, and as the GUI insisting the interface had no rules while
+    # traffic flowed through it regardless.
     FW_FILE="/tmp/dslite_fw.conf"
     cat > "${FW_FILE}" << FWEOF
-pass out quick on ${TUNNEL_IF} all scrub (max-mss ${MSS_CLAMP}) keep state
-pass in quick on ${TUNNEL_IF} all scrub (max-mss ${MSS_CLAMP}) keep state
+match out on ${TUNNEL_IF} all scrub (max-mss ${MSS_CLAMP})
+match in on ${TUNNEL_IF} all scrub (max-mss ${MSS_CLAMP})
 FWEOF
 
     # Load into OPNsense's registered anchors
