@@ -352,8 +352,20 @@ if [ -n "${OPNSENSE_GW}" ]; then
         fi
     fi
 else
+    # No enabled gateway is configured for this interface, so OPNsense is not
+    # managing the default route and dpinger is not probing anything here. Say so
+    # loudly: the route installed below looks healthy in the routing table but
+    # nothing monitors it, so WAN failover cannot trigger. That silence is what
+    # made a disabled gateway look like a working tunnel until the link died.
+    logger -t dslite "WARNING: no enabled OPNsense gateway on ${TUNNEL_IF}; installing an unmonitored default route -- dpinger cannot probe it and WAN failover will NOT trigger for this tunnel"
     remove_owned_default_route
-    if [ "${TUNNEL_P2P}" = "1" ]; then
+    if [ -n "$(route -n get default 2>/dev/null)" ]; then
+        # Same contract as the gateway branch above: whatever is there is either
+        # the system's or the second WAN's after a failover, and taking it back
+        # would undo that failover.
+        rm -f "${STATE_OWNED_ROUTE}"
+        logger -t dslite "A default IPv4 route is already present and is not ours; leaving it alone"
+    elif [ "${TUNNEL_P2P}" = "1" ]; then
         # For IPIP tunnel, route via the tunnel interface directly
         if route add default -interface "${TUNNEL_IF}" 2>/dev/null ||
            route change default -interface "${TUNNEL_IF}" 2>/dev/null; then
