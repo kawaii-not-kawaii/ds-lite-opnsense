@@ -307,9 +307,6 @@ fi
 # Set MTU
 ifconfig "${TUNNEL_IF}" mtu "${MTU}"
 
-# Apply TCP MSS clamping via sysctl (derives MSS from interface MTU)
-sysctl net.inet.tcp.mss_ifmtu=1 >/dev/null 2>&1
-
 # Bring interface up
 ifconfig "${TUNNEL_IF}" up
 
