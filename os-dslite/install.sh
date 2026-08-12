@@ -101,6 +101,13 @@ service configd restart
 # Flush caches
 rm -rf /tmp/opnsense_*cache* 2>/dev/null
 
+# Re-register cron. Copying files does not rebuild the crontab -- only a package
+# install runs the post-install hook that reads dslite_cron(). Without this the
+# */30 prefix-update job never runs, and on a Fixed IP service that means the CE
+# registration goes stale the next time the delegated prefix changes, silently.
+echo "Re-registering cron jobs..."
+configctl cron restart >/dev/null 2>&1 || true
+
 # Cleanup
 rm -rf "${TMP_DIR}"
 
@@ -108,12 +115,22 @@ echo ""
 echo "=== Installation complete! ==="
 echo ""
 echo "Next steps:"
-echo "  1. Log out and back into the OPNsense web UI"
-echo "  2. Go to Interfaces > DS-Lite"
-echo "  3. Enable DS-Lite, select your ISP profile, pick WAN interface"
-echo "  4. Click Apply"
+echo "  1. Log out and back into the OPNsense web UI (the menu entry"
+echo "     will not appear until you do)"
+echo "  2. Go to Interfaces > DS-Lite > Settings"
+echo "  3. Enable, pick your mode and WAN interface, click Save"
 echo ""
-echo "Prerequisites:"
-echo "  - WAN interface set to DHCPv6 (IPv4: None)"
-echo "  - LAN IPv6 set to DHCPv6 with prefix size /56"
+echo "Prerequisites (Interfaces > [WAN]):"
+echo "  - IPv4 Configuration Type: None"
+echo "  - IPv6 Configuration Type: DHCPv6"
+echo "  - Prefix delegation size: 56 (or whatever your ISP delegates)"
+echo ""
+echo "Fixed IP mode also needs, from your provisioning mail:"
+echo "  - Interface ID, BR/AFTR address, and the fixed IPv4"
+echo "  - the update URL plus its user/password, so the CE address"
+echo "    re-registers automatically when your prefix changes"
+echo ""
+echo "After the tunnel is up, add a gateway on the DS-Lite interface"
+echo "or nothing will monitor it and WAN failover will never trigger."
+echo "See the README section 'Gateway and failover'."
 echo ""

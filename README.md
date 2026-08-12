@@ -1,11 +1,12 @@
 # OPNsense DS-Lite / Fixed IP Plugin
 
-OPNsense plugin for Japanese ISP IPv4-over-IPv6 tunneling. Supports both **DS-Lite** (shared IPv4 / CG-NAT) and **Fixed IP** (dedicated public IPv4 via IPIP) with **HB46PP auto-provisioning**.
+OPNsense plugin for Japanese ISP IPv4-over-IPv6 tunneling. Supports both **DS-Lite** (shared IPv4 / CG-NAT) and **Fixed IP** (dedicated public IPv4 via IPIP). HB46PP auto-provisioning lives on the [`hb46pp` branch](#branches); this branch configures Fixed IP manually.
 
 ## Features
 
-- **HB46PP Auto-Provisioning** — just enter your ISP credentials, everything else is automatic
-- **Fixed IP (IPIP)** — dedicated public IPv4 with inbound port forwarding
+- **HB46PP Auto-Provisioning** — just enter your ISP credentials, everything else is automatic *(`hb46pp` branch only)*
+- **Fixed IP (IPIP)** — dedicated public IPv4 with inbound port forwarding, per-provider
+  Interface ID placement and update-server auth
 - **DS-Lite** — shared IPv4 via CG-NAT, auto-detected from prefix
 - **MAP-E (experimental)** — RFC 7597 address/port derivation with a real pf `map-e-portset` NAT rule
 - **Dashboard widget** — real-time tunnel status and health on the OPNsense lobby
@@ -19,49 +20,70 @@ OPNsense plugin for Japanese ISP IPv4-over-IPv6 tunneling. Supports both **DS-Li
 
 | Branch | Description |
 |--------|-------------|
-| `main` | Stable DS-Lite + manual Fixed IP |
+| `main` | Stable DS-Lite + manual Fixed IP. **You are reading main's README.** |
 | `hb46pp` | **Experimental** — HB46PP auto-provisioning for both modes |
+
+HB46PP auto-provisioning is **not on `main`** — `main` has no provisioning credential
+fields and its modes are `dslite` / `fixedip` / `mape` only. On `main` you enter the
+Fixed IP parameters from your provisioning mail by hand. The sections below marked
+HB46PP describe the `hb46pp` branch.
 
 ## Supported ISPs / VNEs
 
 | VNE Service | DS-Lite | Fixed IP (IPIP) | HB46PP Auto |
 |-------------|---------|-----------------|-------------|
 | v6 Connect (Asahi Net) | Yes | Yes | Yes |
-| Transix (Internet Multifeed) | Yes | - | Untested |
+| freebit enabler | - | **Yes** | - |
+| Transix (Internet Multifeed) | Yes | Yes | Untested |
 | Xpass (ARTERIA Networks) | Yes | - | Untested |
 | BIGLOBE IPv6 (IPIP) | - | Yes | Untested |
 | OCX Hikari Internet | - | Yes | Untested |
 
-Any ISP using the [HB46PP standard provisioning protocol](https://github.com/v6pc/v6mig-prov/blob/master/spec.md) should work automatically.
+Any ISP using the [HB46PP standard provisioning protocol](https://github.com/v6pc/v6mig-prov/blob/master/spec.md) should work automatically **on the `hb46pp` branch**. On `main`, Fixed IP parameters are entered by hand from your provisioning mail.
+
+Providers differ in two ways that `main` handles per-profile, and getting either wrong
+produces a tunnel that comes up perfectly and passes no traffic — see
+[Troubleshooting](#troubleshooting):
+
+- **Interface ID placement** — `transix` and `enabler` supply a plain low-64 interface
+  ID (`host`); other providers supply a subnet selector aligned to the delegated prefix
+  (`subnet`).
+- **Update-server auth** — `transix` and `enabler` take credentials as query parameters
+  (`username`/`password` and `user`/`pass` respectively); the v6 Connect family uses
+  HTTP Basic.
 
 ### Tested on
 
+- **freebit enabler** + NTT Hikari Cross (10G plan) — Fixed IP, OPNsense 26.7.1
+  (FreeBSD 15.1). **2.2 Gbit/s** sustained through the tunnel, measured from three
+  hosts independently; that is the full 2.5 G service after MSS-clamp overhead.
 - **Asahi Net** (asahi-net.jp) + NTT West Flets Hikari Cross (10G plan)
-- OPNsense 25.1 and 26.1.4 (FreeBSD 14.2)
+- OPNsense 25.1, 26.1.4, 26.7.1
 - Fixed IP: inbound port forwarding verified
-- Performance: 1.89 Gbps (iperf3 8-stream) through DS-Lite tunnel
+- Survives a router reboot unattended: tunnel, default route, monitor host route and
+  egress address all come back without intervention
 
 ## Installation
 
 ### On OPNsense (IPv6-only safe)
 
-**HB46PP branch (recommended for Fixed IP users):**
-
-```sh
-curl -6 -skL -o /tmp/install-dslite.sh "https://raw.githubusercontent.com/kawaii-not-kawaii/ds-lite-opnsense/hb46pp/os-dslite-hb46pp/install.sh" && sh /tmp/install-dslite.sh
-```
-
-**Main branch (DS-Lite only):**
+**Main branch (DS-Lite + manual Fixed IP):**
 
 ```sh
 curl -6 -skL -o /tmp/install-dslite.sh "https://raw.githubusercontent.com/kawaii-not-kawaii/ds-lite-opnsense/main/os-dslite/install.sh" && sh /tmp/install-dslite.sh
+```
+
+**HB46PP branch (auto-provisioning, experimental):**
+
+```sh
+curl -6 -skL -o /tmp/install-dslite.sh "https://raw.githubusercontent.com/kawaii-not-kawaii/ds-lite-opnsense/hb46pp/os-dslite-hb46pp/install.sh" && sh /tmp/install-dslite.sh
 ```
 
 ### Remote install via SSH
 
 ```sh
 git clone https://github.com/kawaii-not-kawaii/ds-lite-opnsense.git
-cd ds-lite-opnsense/os-dslite-hb46pp  # or os-dslite for main branch
+cd ds-lite-opnsense/os-dslite         # or os-dslite-hb46pp on the hb46pp branch
 ./deploy.sh <opnsense-ip>
 ```
 
@@ -83,17 +105,31 @@ removes a default route and a `gif` interface the plugin can prove it created, s
 unrelated tunnel or gateway on the box is never touched. See
 [Building a Package](#building-a-package) for build options.
 
-**Important:** After installing the plugin, you need to **reboot OPNsense** (or log
-out/in) for the DS-Lite menu to appear under Interfaces.
+**Important:** After installing, **log out and back into the web UI** for the DS-Lite
+menu to appear under Interfaces. A reboot is not required.
 
 ## Prerequisites
 
-1. **WAN interface** (connected to NTT ONT)
+1. **WAN interface** (connected to NTT ONT) — *Interfaces → [WAN]*
    - IPv4 Configuration Type: **None**
    - IPv6 Configuration Type: **DHCPv6**
+   - *DHCPv6 Prefix Delegation size*: **56** (match what your ISP delegates)
+   - *Request prefix only*: check this if your ISP delegates a prefix but assigns no
+     address to the WAN itself. In that case the WAN's only global address is the
+     `/128` this plugin adds, which is normal and expected.
 
-2. **LAN interface**
-   - IPv6 Configuration Type: **Track Interface** (tracking WAN)
+2. **LAN interface** — *Interfaces → [LAN]*
+   - IPv6 Configuration Type: **Track Interface** (tracking WAN), or a static address
+     from one `/64` of your delegation if you prefer to control the subnet id.
+
+3. **For Fixed IP mode**, have your provisioning mail to hand. You need:
+
+   | From the mail | Goes in |
+   |---|---|
+   | Interface ID (e.g. `007d:3202:4a00:0000`) | Interface ID |
+   | BR / AFTR address (e.g. `2404:9200:225:100::65`) | AFTR Address |
+   | Fixed IPv4 (e.g. `125.50.2.74`) | Fixed IPv4 Address |
+   | Update URL, user, password | Update URL / Auth User / Auth Password |
 
 ### NTT Prefix Delegation by Plan
 
@@ -105,15 +141,37 @@ out/in) for the DS-Lite menu to appear under Interfaces.
 
 ## Usage
 
-### Fixed IP (with HB46PP auto-provisioning)
+### Fixed IP — `main` branch (manual)
 
-1. Navigate to **Interfaces > DS-Lite**
-2. Enable, select **Fixed IP** mode
-3. Enter your ISP provisioning credentials (User ID + Password)
-4. Select WAN interface
-5. Click **Apply**
+1. **Interfaces → DS-Lite → Settings**
+2. Enable, set Mode to **Fixed IP**
+3. **ISP Profile** — pick your provider, or leave **Auto**. Auto resolves the provider
+   from the BR address in Fixed IP mode, falling back to the delegated prefix.
+4. **WAN Interface** — the interface holding the DHCPv6 delegation
+5. Fill in **Interface ID**, **AFTR Address** (your BR) and **Fixed IPv4 Address**
+6. Fill in **Update URL** plus **Auth User** / **Auth Password**. Enter the URL *without*
+   credentials — the plugin appends them in the form your provider expects. For enabler
+   that means `http://fcs.enabler.ne.jp/update`, not the full URL from the mail.
+   Their endpoint is HTTP-only, so tick **Allow Insecure Update URL**.
+7. **Save**
 
-The plugin automatically discovers the provisioning server, authenticates, and configures the IPIP tunnel with your dedicated public IPv4.
+> **Tunnel Interface is an advanced field.** It defaults to `gif0` and is hidden until
+> you toggle **Advanced mode** at the top of the page. If another GIF tunnel already
+> holds `gif0`, change it here — the plugin refuses to take over a device it did not
+> create and logs which unit is in the way. It does **not** pick a free unit for you.
+
+Then register your CE address once by hand, because the tunnel is not yet passing
+traffic and the automatic update runs only when the CE *changes*:
+
+```sh
+# on the router, sourced from the CE address the plugin derived
+grep dslite /var/log/system/latest.log | grep 'CE address'
+curl -6 -s --interface <CE-address> "http://fcs.enabler.ne.jp/update?user=<user>&pass=<pass>"
+```
+
+The request goes out over native IPv6, not through the tunnel, which is why it works
+while the tunnel is dead. Providers register whatever source address they see, so the
+`--interface` bind is the part that matters.
 
 ### DS-Lite (shared IPv4)
 
@@ -124,15 +182,102 @@ The plugin automatically discovers the provisioning server, authenticates, and c
 
 The AFTR is auto-detected from your IPv6 prefix. No credentials needed for most ISPs.
 
-### Port Forwarding (Fixed IP only)
+## Firewall and NAT
 
-With a Fixed IP, you get a dedicated public IPv4 address. Port forwarding works through OPNsense's standard Destination NAT:
+The plugin loads its own outbound NAT and a minimal rule set into registered pf anchors,
+so **basic outbound traffic works with no manual rules**. What you may still need:
 
-**Firewall > NAT > Destination NAT** → Add rule mapping external port to internal server.
+### Outbound — nothing to do
+
+`nat on <tunnel> from any to any -> <fixed-ipv4>` is installed automatically when **Enable
+NAT** is on (the default). Leave OPNsense's outbound NAT on *Automatic*; do not add a
+manual outbound rule for the tunnel interface as well, or you get two translations.
+
+### Interface settings that matter
+
+On **Interfaces → DS-Lite**:
+
+| Setting | Value | Why |
+|---|---|---|
+| **Block private networks** | ✅ on | It carries your public address |
+| **Block bogon networks** | ✅ on | Same |
+
+Do **not** set either of those on a CGNAT-based backup WAN — its gateway is itself
+RFC1918, so blocking private networks there blocks its own gateway and breaks DHCP
+renewal and gateway monitoring.
+
+### Port forwarding (Fixed IP only)
+
+**Firewall → NAT → Port Forward** → add a rule:
+
+| Field | Value |
+|---|---|
+| Interface | **DS-Lite** |
+| Destination | **DS-Lite net** — *not* `DS-Lite address` |
+| Destination port | your external port |
+| Redirect target IP / port | your internal server |
+| **Filter rule association** | **Add associated filter rule** |
+
+Two traps here, both of which fail *silently*:
+
+- **`DS-Lite address` never resolves.** It emits a `<name>ip` token that OPNsense only
+  registers for interfaces matching `^(wan|lan|opt[0-9]+)$`, so every plugin-registered
+  interface is excluded. The rule is emitted commented out with
+  `#debug:Unable to convert address` and simply does nothing. Use the `net` form — in
+  Fixed IP mode the address is assigned point-to-point with a `/32` netmask, so
+  `(gifN:network)` *is* the single public address, and it tracks changes.
+- **Do not use `Pass`** as the filter rule association. It folds the permission into the
+  `rdr` rule, where it never appears under Firewall → Rules — an invisible rule you
+  cannot audit later.
+
+### Inbound rules
+
+The tunnel interface has **no inbound pass rules by default**, which is the correct
+default-deny posture. Add rules on the **DS-Lite** interface only for services you
+deliberately expose. Nothing needs to be opened for the tunnel itself: the encapsulated
+return traffic arrives on the *WAN* as IPv6 protocol 4, and is accepted as part of the
+tunnel's own state.
+
+## Gateway and failover
+
+**The plugin does not create a gateway, and without one nothing monitors the tunnel.**
+OPNsense spawns no dpinger instance, so the tunnel can never enter a down state, a
+gateway group's *Member Down* trigger has nothing to fire on, and failover silently never
+happens. The plugin logs a warning when it detects this.
+
+**System → Gateways → Configuration → Add:**
+
+| Field | Value |
+|---|---|
+| Name | e.g. `FixedIP` |
+| Interface | **DS-Lite** |
+| Address Family | IPv4 |
+| Gateway | your fixed IPv4 (the tunnel's own p2p peer) |
+| **Far Gateway** | ✅ required |
+| Monitor IP | something *not* used by another gateway, e.g. `9.9.9.9` |
+| Priority | lower number wins; below your backup WAN's to make the tunnel primary |
+| Default gateway | ✅ |
+
+- **Far Gateway is mandatory.** In Fixed IP mode the p2p peer equals the local address,
+  so the next hop is not inside any attached subnet and OPNsense rejects it otherwise.
+- **Monitor IPs must be unique per gateway.** OPNsense rejects duplicates, and each
+  monitor gets its own pinned host route.
+- The plugin re-pins that monitor host route on every rebuild. Without it, probes follow
+  the default route — which after a failover is a different WAN — and the tunnel would
+  report healthy because something else answered, and never fail back.
+
+Verify with:
+
+```sh
+configctl interface gateways status
+```
+
+A gateway missing from that output is not being monitored. Run it after any gateway or
+WAN change.
 
 ## How it works
 
-### HB46PP Protocol
+### HB46PP Protocol *(`hb46pp` branch)*
 
 [HB46PP](https://github.com/v6pc/v6mig-prov/blob/master/spec.md) (HTTP-Based IPv4 over IPv6 Provisioning Protocol) is a Japanese standard for auto-configuring IPv4-over-IPv6 tunnels.
 
@@ -163,7 +308,7 @@ The plugin implements this protocol to provide the same auto-provisioning experi
 
 - **Tunnel interface**: FreeBSD `gif` (IPv4-in-IPv6 encapsulation)
 - **MTU**: 1460 (1500 - 40 byte IPv6 header)
-- **MSS clamping**: Automatic via `net.inet.tcp.mss_ifmtu`
+- **MSS clamping**: pf `match … scrub (max-mss N)` on the tunnel, in both directions
 - **NAT**: pf masquerade via registered anchors
 - **Firewall**: Integrated with OPNsense's pf anchor system
 - **Boot & renewal**: Auto-starts via the `vpn` boot hook and reconfigures on IPv6
@@ -184,7 +329,27 @@ The plugin implements this protocol to provide the same auto-provisioning experi
 
 ## Performance
 
-Tested on Proxmox VM (4 cores, 4GB RAM) with an Intel **I226-V 2.5GbE** NIC:
+**Fixed IP, freebit enabler**, 2.5 G service — OPNsense as a 4-vCPU KVM guest
+(i5-12600H), `virtio` NICs, OPNsense 26.7.1:
+
+| Test | Result |
+|------|--------|
+| iperf3 32-stream download | **2.24 Gbps** |
+| iperf3, two hosts to two servers | 2.18 Gbps aggregate |
+| Latency to Quad9 through tunnel | 35 ms |
+
+The ceiling is the service, not the plugin: single-host, dual-server and dual-host runs
+all converge on the same number, and the router sits ~80% idle at full rate. 2.24 Gbps
+is ~94% of the theoretical goodput for a 2.5 G line at a 1420-byte MSS.
+
+Two things that *did* matter on the host side, worth checking before blaming the tunnel:
+
+- **NIC multiqueue.** With `virtio` exposing a single queue pair, Suricata in `workers`
+  runmode gets exactly one worker and pins one core. Raising the VM's NIC to 4 queues
+  took throughput from 1.69 to 2.24 Gbps **with IDS still running**.
+- **Do not benchmark from the router itself** — measure from a LAN host.
+
+**DS-Lite, Asahi Net**, on Proxmox with an Intel **I226-V 2.5GbE** NIC:
 
 | Test | Result |
 |------|--------|
@@ -310,6 +475,82 @@ Diagnostics panel. Each check reports `ok` / `ng` / `skipped` / `not-configured`
 > contacting the ISP, so opening or refreshing the page never spends credentials or
 > changes provider-side state. To force a live update, use the **Run prefix update
 > now** button, or `configctl dslite prefix_update` from the shell.
+
+## Troubleshooting
+
+### The tunnel is up but nothing passes (Fixed IP)
+
+The signature failure of Fixed IP mode. Everything looks correct — interface `UP`,
+address assigned, routes installed, no errors — and packets leave while **nothing ever
+comes back**. Confirm it in one command:
+
+```sh
+netstat -I <tunnel> -b        # Opkts climbing, Ipkts stuck at 0
+```
+
+Then check whether the BR is answering at all:
+
+```sh
+tcpdump -i <wan> -nn 'host <BR-address>'
+```
+
+Outbound-only means the BR is discarding your packets. Almost always one of:
+
+1. **Your CE address is not the one the provider has on file.** The commonest cause, and
+   the hardest to see, because the provider's update URL answers `OK` to a *wrong*
+   address too — it registers whatever source it sees. Check which reading the plugin
+   used, and try the other:
+
+   ```sh
+   grep dslite /var/log/system/latest.log | grep 'CE address'
+   # -> CE address 240b:... derived from Interface ID 007d:3202:4a00:0000 (host placement)
+   ```
+
+   `host` places the Interface ID in the low 64 bits. `subnet` aligns it to the delegated
+   prefix boundary. On a `/56` the two differ by one byte. Set **ISP Profile**
+   explicitly rather than leaving it on Auto if your provider is misdetected.
+
+2. **The CE was never registered.** Register it by hand once — see
+   [Fixed IP](#fixed-ip--main-branch-manual). The plugin only re-registers when the CE
+   *changes*, so a first-time setup needs one manual call.
+
+3. **The update URL is wrong.** A bare hostname returns an HTML page rather than the
+   provider's status word. Check what came back:
+
+   ```sh
+   cat /var/run/dslite_prefix_update_status   # "<epoch> <rc> <code>"
+   ```
+
+### A ping from the fixed IP "works" but the tunnel is dead
+
+Do not use `ping -S <fixed-ip> <target>` as proof. **The source address does not select
+the path** — if your default route is still on another WAN, the packet leaves there and
+that WAN's NAT rewrites it, returning 0% loss and a plausible RTT through a tunnel
+carrying nothing. Pin a route and capture instead:
+
+```sh
+route add <target> -interface <tunnel>
+ping -c4 -S <fixed-ipv4> <target>
+tcpdump -i <tunnel> -nn                       # in another shell
+route delete <target>
+```
+
+### Failover never triggers
+
+No gateway on the tunnel, or a disabled one. See
+[Gateway and failover](#gateway-and-failover). `configctl interface gateways status` is
+the check — a gateway absent from that output is not monitored.
+
+### The menu does not appear
+
+Log out and back in. A file-copy install cannot invalidate the UI cache for a session
+that is already open.
+
+### The DS-Lite interface shows as "offline"
+
+Expected. The plugin registers the interface without addressing, so OPNsense's model has
+no IP for it and reports offline while the real address lives on the device. Check
+`ifconfig <tunnel>` for the truth.
 
 ## Building a Package
 
