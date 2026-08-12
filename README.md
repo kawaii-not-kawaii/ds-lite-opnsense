@@ -55,13 +55,16 @@ produces a tunnel that comes up perfectly and passes no traffic — see
 ### Tested on
 
 - **freebit enabler** + NTT Hikari Cross (10G plan) — Fixed IP, OPNsense 26.7.1
-  (FreeBSD 15.1). **2.2 Gbit/s** sustained through the tunnel, measured from three
-  hosts independently; that is the full 2.5 G service after MSS-clamp overhead.
+  (FreeBSD 15.1) on bare metal. **2.29 Gbit/s** per flow through the tunnel, 4.5 Gbit/s
+  aggregate; native IPv6 on the same line reaches 6.7 Gbit/s. See
+  [Performance](#performance) for what the encapsulation costs.
 - **Asahi Net** (asahi-net.jp) + NTT West Flets Hikari Cross (10G plan)
 - OPNsense 25.1, 26.1.4, 26.7.1
 - Fixed IP: inbound port forwarding verified
-- Survives a router reboot unattended: tunnel, default route, monitor host route and
-  egress address all come back without intervention
+- Survives a router reboot unattended: tunnel, default route, monitor host route,
+  gateway monitoring and egress address all come back without intervention. Note the
+  gateway legitimately reads **Offline for the first 1–2 minutes** after boot while the
+  tunnel is built and dpinger's rolling average clears
 
 ## Installation
 
@@ -329,25 +332,51 @@ The plugin implements this protocol to provide the same auto-provisioning experi
 
 ## Performance
 
-**Fixed IP, freebit enabler**, 2.5 G service — OPNsense as a 4-vCPU KVM guest
-(i5-12600H), `virtio` NICs, OPNsense 26.7.1:
+**Fixed IP, freebit enabler** on a 10G circuit — OPNsense 26.7.1 on bare metal
+(OptiPlex 3070 SFF, i5-9400, Intel X520-DA2):
 
 | Test | Result |
 |------|--------|
-| iperf3 32-stream download | **2.24 Gbps** |
-| iperf3, two hosts to two servers | 2.18 Gbps aggregate |
+| Native IPv6, Ookla to a 400G Tokyo server | **6.7 Gbps down / 2.7 up** |
+| Native IPv6, iperf3 16-stream | 3.65 Gbps |
+| **IPv4 through the tunnel**, iperf3 16-stream, same server | **2.29 Gbps** |
+| IPv4 through the tunnel, aggregate across 3 LAN hosts | 4.5 Gbps |
 | Latency to Quad9 through tunnel | 35 ms |
 
-The ceiling is the service, not the plugin: single-host, dual-server and dual-host runs
-all converge on the same number, and the router sits ~80% idle at full rate. 2.24 Gbps
-is ~94% of the theoretical goodput for a 2.5 G line at a 1420-byte MSS.
+### What the tunnel costs
 
-Two things that *did* matter on the host side, worth checking before blaming the tunnel:
+The most useful figure here is the **same machine, same server, same time window**,
+changing only the address family:
 
-- **NIC multiqueue.** With `virtio` exposing a single queue pair, Suricata in `workers`
-  runmode gets exactly one worker and pins one core. Raising the VM's NIC to 4 queues
-  took throughput from 1.69 to 2.24 Gbps **with IDS still running**.
-- **Do not benchmark from the router itself** — measure from a LAN host.
+```
+IPv4 through gif0    2.29 Gbps
+IPv6 native          3.65 Gbps      +59%
+```
+
+`gif` encapsulation is per-packet software work with no hardware offload, so IPv4 pays
+for it and IPv6 does not. Expect roughly:
+
+- **~2.3–2.6 Gbps per IPv4 flow-source**, largely independent of hardware — a single
+  flow cannot spread across NIC queues
+- **~4.5 Gbps aggregate IPv4** once several concurrent flows use all queues
+- **No such ceiling on native IPv6**, which bypasses the tunnel entirely
+
+Clients prefer IPv6 (RFC 6724), so dual-stack destinations already take the fast path.
+This is the cost of IPv4-over-IPv6, not a defect in the plugin or your hardware.
+
+### Measuring it without fooling yourself
+
+- **NIC multiqueue matters on VMs.** With `virtio` exposing a single queue pair,
+  Suricata in `workers` runmode gets exactly one worker and pins one core; raising the
+  VM's NIC to 4 queues took throughput from 1.69 to 2.24 Gbps *with IDS still running*.
+  On bare metal `ix` allocates one queue per core automatically and there is nothing to
+  configure.
+- **Router and LAN-host numbers are not comparable** — the router beat a LAN host
+  3.65 vs 2.26 Gbps to the same server on the same family, partly from client link
+  speed and partly from the absent LAN hop.
+- **Public iperf3 servers cap out well below a 10G line.** Free 10G boxes become the
+  bottleneck past ~4 Gbps, vary 6× hour to hour, and often accept only one test at a
+  time. Use a server you control for anything above that.
 
 **DS-Lite, Asahi Net**, on Proxmox with an Intel **I226-V 2.5GbE** NIC:
 
