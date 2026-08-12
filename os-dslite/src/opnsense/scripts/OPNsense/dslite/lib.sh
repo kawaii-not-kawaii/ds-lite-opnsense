@@ -37,6 +37,12 @@ AFTR_TRANSIX="2001:c28:5:301::11"
 AFTR_XPASS="2001:f60:0:200::1"
 AFTR_V6CONNECT="2404:8e00::feed:100"
 
+# freebit "enabler" fixed-IP service (fcs.enabler.ne.jp). The BR lives in the
+# same 2404:9200:225:100::/64 as the v6plus MAP-E BR below, so match on the /64
+# rather than a single address: the per-subscriber BR differs by the low byte
+# (::64 for v6plus, ::65 for the fixed-IP IPIP service observed in the field).
+BR_ENABLER_NET="2404:9200:225:100:"
+
 # Prefix-to-AFTR mapping table for Japanese DS-Lite ISPs
 # Format: prefix/len|aftr_address (pipe-delimited to avoid IPv6 colon conflict)
 # Sources: UDM-Pro config, community documentation, ISP specifications
@@ -304,6 +310,11 @@ get_config() {
     NAT_ENABLED=$(config_get "//OPNsense/dslite/nat_enabled")
     FIXEDIP_ALLOW_INSECURE=$(config_get "//OPNsense/dslite/fixedip_allow_insecure")
 
+    # Read here as well as in configure.sh: fixedip_provider() resolves the
+    # provider from the BR address when the profile is left on auto, and it is
+    # reachable from status/diagnostics paths that never source configure.sh.
+    FIXEDIP_AFTR=$(config_get "//OPNsense/dslite/fixedip_aftr")
+
     # Tunnel unit. Anything that is not a plain gif unit name falls back to the
     # default rather than reaching ifconfig, so a malformed config value cannot
     # turn into an argument we did not intend.
@@ -405,13 +416,23 @@ fixedip_provider() {
 
     case "${ISP_PROFILE}" in
         transix) echo "transix" ; return ;;
+        enabler) echo "enabler" ; return ;;
         auto)    ;;
         *)       echo "generic" ; return ;;
     esac
 
     # "auto" is the default the operator gets by never touching the dropdown,
-    # so it must not quietly resolve to the wrong provider. Reuse the prefix
-    # table that already drives AFTR auto-detection.
+    # so it must not quietly resolve to the wrong provider.
+    #
+    # The BR address is checked before the prefix table because it is the one
+    # value the operator copies verbatim from the provisioning mail. enabler
+    # hands out prefixes from 240b::/20, which is shared with several other
+    # services, so the delegated prefix cannot identify it.
+    case "${FIXEDIP_AFTR}" in
+        ${BR_ENABLER_NET}*) echo "enabler" ; return ;;
+    esac
+
+    # Reuse the prefix table that already drives AFTR auto-detection.
     pd=$(get_pd_prefix)
     if [ -n "${pd}" ]; then
         detected=$(detect_aftr_from_prefix "${pd}")
@@ -425,27 +446,37 @@ fixedip_provider() {
 }
 
 fixedip_iid_placement() {
-    if [ "$(fixedip_provider)" = "transix" ]; then
-        echo "host"
-    else
-        echo "subnet"
-    fi
+    case "$(fixedip_provider)" in
+        transix|enabler) echo "host" ;;
+        *)               echo "subnet" ;;
+    esac
 }
 
 # How the update server expects credentials.
 #
-#   query  transix takes them as URL parameters and identifies the CE from the
-#          request's source address. It answers 400/"NG" to anything else --
-#          notably it never issues a 401, so challenge-response auth silently
-#          never sends the credentials at all.
+#   query  transix and enabler take them as URL parameters and identify the CE
+#          from the request's source address. transix answers 400/"NG" to
+#          anything else -- notably it never issues a 401, so challenge-response
+#          auth silently never sends the credentials at all. enabler answers a
+#          bare "OK".
 #
 #   basic  RFC 7617 via netrc, which is what the v6 Connect family uses.
 fixedip_auth_style() {
-    if [ "$(fixedip_provider)" = "transix" ]; then
-        echo "query"
-    else
-        echo "basic"
-    fi
+    case "$(fixedip_provider)" in
+        transix|enabler) echo "query" ;;
+        *)               echo "basic" ;;
+    esac
+}
+
+# Parameter names for the query auth style, as "<user_param> <pass_param>".
+# The two providers that use query auth disagree on the spelling, and sending
+# the wrong pair authenticates as nobody: enabler still answers "OK" because it
+# treats the request as an anonymous route reset, so this fails silently.
+fixedip_auth_params() {
+    case "$(fixedip_provider)" in
+        enabler) echo "user pass" ;;
+        *)       echo "username password" ;;
+    esac
 }
 
 # Derive the tunnel-local (CE) IPv6 address from the provider's Interface ID.
@@ -619,7 +650,7 @@ get_expected_aftr() {
 # certificate verification is never disabled for an https:// endpoint.
 dslite_authed_get() {
     local url="$1" user="$2" pass="$3" allow="$4" source_addr="$5"
-    local netrc out rc
+    local netrc out rc sep
 
     [ -n "${url}" ] || return 2
 
@@ -644,9 +675,18 @@ dslite_authed_get() {
     # be rejected or register the wrong address; harmless for providers that
     # ignore it.
     if [ "$(fixedip_auth_style)" = "query" ]; then
+        # Providers publish the endpoint with its own query string attached
+        # (enabler's provisioning mail gives ".../update?user=...&pass=..."),
+        # so a hardcoded "?" would produce a second one and the server would
+        # read the whole tail as one malformed parameter value.
+        case "${url}" in
+            *\?*) sep="&" ;;
+            *)    sep="?" ;;
+        esac
+        set -- $(fixedip_auth_params)
         out=$(curl -6 -s --connect-timeout 5 --max-time 20 \
               ${source_addr:+--interface "${source_addr}"} \
-              "${url}?username=$(urlencode "${user}")&password=$(urlencode "${pass}")" 2>&1)
+              "${url}${sep}${1}=$(urlencode "${user}")&${2}=$(urlencode "${pass}")" 2>&1)
         rc=$?
     else
         netrc=$(umask 077; mktemp /tmp/dslite-netrc.XXXXXX) || return 2

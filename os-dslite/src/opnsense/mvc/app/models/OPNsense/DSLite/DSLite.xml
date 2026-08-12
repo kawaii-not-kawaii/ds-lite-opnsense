@@ -24,6 +24,7 @@
                 <transix>Transix (Internet Multifeed)</transix>
                 <xpass>Xpass (ARTERIA Networks)</xpass>
                 <v6connect>v6 Connect (NTT Smart Connect)</v6connect>
+                <enabler>Enabler (freebit)</enabler>
                 <custom>Custom</custom>
             </OptionValues>
         </isp_profile>
