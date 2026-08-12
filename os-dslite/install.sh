@@ -3,14 +3,49 @@
 # OPNsense DS-Lite Plugin Installer
 # Works over IPv6-only connections (for pre-tunnel install)
 # Run this directly on the OPNsense box:
-#   fetch --no-verify-hostname --no-verify-peer -o /tmp/install-dslite.sh "https://raw.githubusercontent.com/kawaii-not-kawaii/ds-lite-opnsense/main/os-dslite/install.sh" && sh /tmp/install-dslite.sh
+#   curl -6 -skL -o /tmp/install-dslite.sh "https://raw.githubusercontent.com/kawaii-not-kawaii/ds-lite-opnsense/main/os-dslite/install.sh" && sh /tmp/install-dslite.sh
 
 set -e
 
-PLUGIN_URL="https://github.com/kawaii-not-kawaii/ds-lite-opnsense/archive/refs/heads/main.tar.gz"
+# Files are fetched individually from raw.githubusercontent.com rather than as a
+# tarball from github.com, because github.com and codeload.github.com are
+# IPv4-only -- they publish no AAAA record. raw.githubusercontent.com is behind
+# Fastly and does have real IPv6. Since the whole point of this installer is to
+# run on a box whose IPv4 does not exist until the tunnel it installs is up,
+# pulling the tarball would fail exactly when it is needed most.
+BRANCH="${DSLITE_BRANCH:-main}"
+BASE_URL="https://raw.githubusercontent.com/kawaii-not-kawaii/ds-lite-opnsense/${BRANCH}/os-dslite/src"
 TMP_DIR="/tmp/dslite-install"
 
+# Source paths, relative to os-dslite/src. The install destination is always
+# /usr/local/<same relative path>, so one list drives both.
+FILES="
+etc/inc/plugins.inc.d/dslite.inc
+opnsense/mvc/app/controllers/OPNsense/DSLite/GeneralController.php
+opnsense/mvc/app/controllers/OPNsense/DSLite/DiagnosticsController.php
+opnsense/mvc/app/controllers/OPNsense/DSLite/Api/SettingsController.php
+opnsense/mvc/app/controllers/OPNsense/DSLite/Api/ServiceController.php
+opnsense/mvc/app/controllers/OPNsense/DSLite/forms/general.xml
+opnsense/mvc/app/models/OPNsense/DSLite/DSLite.xml
+opnsense/mvc/app/models/OPNsense/DSLite/DSLite.php
+opnsense/mvc/app/models/OPNsense/DSLite/ACL/ACL.xml
+opnsense/mvc/app/models/OPNsense/DSLite/Menu/Menu.xml
+opnsense/mvc/app/views/OPNsense/DSLite/general.volt
+opnsense/mvc/app/views/OPNsense/DSLite/diagnostics.volt
+opnsense/scripts/OPNsense/dslite/lib.sh
+opnsense/scripts/OPNsense/dslite/configure.sh
+opnsense/scripts/OPNsense/dslite/teardown.sh
+opnsense/scripts/OPNsense/dslite/status.sh
+opnsense/scripts/OPNsense/dslite/diagnostics.sh
+opnsense/scripts/OPNsense/dslite/prefix_update.sh
+opnsense/scripts/OPNsense/dslite/mape_calc.sh
+opnsense/service/conf/actions.d/actions_dslite.conf
+opnsense/www/js/widgets/DSLite.js
+opnsense/www/js/widgets/Metadata/DSLite.xml
+"
+
 echo "=== OPNsense DS-Lite Plugin Installer ==="
+echo "branch: ${BRANCH}"
 echo ""
 
 # Check we're on OPNsense
@@ -19,80 +54,67 @@ if [ ! -f /usr/local/etc/inc/plugins.inc.d/pf.inc ]; then
     exit 1
 fi
 
-echo "Downloading plugin..."
-rm -rf "${TMP_DIR}"
-mkdir -p "${TMP_DIR}"
-
-# Prefer curl -6 (forces IPv6, works before DS-Lite tunnel is up)
-# Fall back to fetch if curl unavailable
 if command -v curl >/dev/null 2>&1; then
-    curl -6 -skL -o "${TMP_DIR}/plugin.tar.gz" "${PLUGIN_URL}"
+    DL="curl"
 elif command -v fetch >/dev/null 2>&1; then
-    fetch --no-verify-hostname --no-verify-peer -o "${TMP_DIR}/plugin.tar.gz" "${PLUGIN_URL}"
+    DL="fetch"
 else
     echo "ERROR: No download tool available (curl or fetch required)"
     exit 1
 fi
 
-echo "Extracting..."
-tar -xzf "${TMP_DIR}/plugin.tar.gz" -C "${TMP_DIR}" --strip-components=3
+# Fetch one file. Prefers IPv6 but does not force it: forcing -6 breaks the
+# install on a dual-stack box whose resolver hands back an IPv4-only CDN node,
+# and the earlier version failed silently when that happened.
+fetch_one() {
+    _src="$1"
+    _dst="$2"
+
+    if [ "${DL}" = "curl" ]; then
+        curl -6 -sfL --connect-timeout 10 -o "${_dst}" "${_src}" 2>/dev/null && return 0
+        curl -sfL --connect-timeout 10 -o "${_dst}" "${_src}" 2>/dev/null && return 0
+    else
+        fetch -q --no-verify-hostname --no-verify-peer -o "${_dst}" "${_src}" && return 0
+    fi
+    return 1
+}
+
+echo "Downloading plugin (${BRANCH})..."
+rm -rf "${TMP_DIR}"
+mkdir -p "${TMP_DIR}"
+
+count=0
+for rel in ${FILES}; do
+    mkdir -p "${TMP_DIR}/$(dirname "${rel}")"
+    if ! fetch_one "${BASE_URL}/${rel}" "${TMP_DIR}/${rel}"; then
+        echo ""
+        echo "ERROR: failed to download ${rel}"
+        echo "       from ${BASE_URL}/${rel}"
+        echo ""
+        echo "Check connectivity to raw.githubusercontent.com. Note that"
+        echo "github.com itself is IPv4-only, so on an IPv6-only box only the"
+        echo "raw.githubusercontent.com host is reachable."
+        exit 1
+    fi
+    # A 404 from raw returns the string "404: Not Found" with a success status
+    # under some curl versions; catch that rather than installing a stub file.
+    if [ ! -s "${TMP_DIR}/${rel}" ]; then
+        echo "ERROR: ${rel} downloaded empty -- aborting"
+        exit 1
+    fi
+    count=$((count + 1))
+    printf '\r  %d/%d files' "${count}" "$(echo "${FILES}" | wc -w | tr -d ' ')"
+done
+echo ""
 
 echo "Installing plugin files..."
-SRC="${TMP_DIR}"
+for rel in ${FILES}; do
+    dst="/usr/local/${rel}"
+    mkdir -p "$(dirname "${dst}")"
+    cp "${TMP_DIR}/${rel}" "${dst}"
+done
 
-# Models
-mkdir -p /usr/local/opnsense/mvc/app/models/OPNsense/DSLite/ACL
-mkdir -p /usr/local/opnsense/mvc/app/models/OPNsense/DSLite/Menu
-cp "${SRC}/opnsense/mvc/app/models/OPNsense/DSLite/DSLite.xml" \
-   /usr/local/opnsense/mvc/app/models/OPNsense/DSLite/
-cp "${SRC}/opnsense/mvc/app/models/OPNsense/DSLite/DSLite.php" \
-   /usr/local/opnsense/mvc/app/models/OPNsense/DSLite/
-cp "${SRC}/opnsense/mvc/app/models/OPNsense/DSLite/ACL/ACL.xml" \
-   /usr/local/opnsense/mvc/app/models/OPNsense/DSLite/ACL/
-cp "${SRC}/opnsense/mvc/app/models/OPNsense/DSLite/Menu/Menu.xml" \
-   /usr/local/opnsense/mvc/app/models/OPNsense/DSLite/Menu/
-
-# Controllers
-mkdir -p /usr/local/opnsense/mvc/app/controllers/OPNsense/DSLite/Api
-mkdir -p /usr/local/opnsense/mvc/app/controllers/OPNsense/DSLite/forms
-cp "${SRC}/opnsense/mvc/app/controllers/OPNsense/DSLite/GeneralController.php" \
-   /usr/local/opnsense/mvc/app/controllers/OPNsense/DSLite/
-cp "${SRC}/opnsense/mvc/app/controllers/OPNsense/DSLite/DiagnosticsController.php" \
-   /usr/local/opnsense/mvc/app/controllers/OPNsense/DSLite/
-cp "${SRC}/opnsense/mvc/app/controllers/OPNsense/DSLite/Api/SettingsController.php" \
-   /usr/local/opnsense/mvc/app/controllers/OPNsense/DSLite/Api/
-cp "${SRC}/opnsense/mvc/app/controllers/OPNsense/DSLite/Api/ServiceController.php" \
-   /usr/local/opnsense/mvc/app/controllers/OPNsense/DSLite/Api/
-cp "${SRC}/opnsense/mvc/app/controllers/OPNsense/DSLite/forms/general.xml" \
-   /usr/local/opnsense/mvc/app/controllers/OPNsense/DSLite/forms/
-
-# Views
-mkdir -p /usr/local/opnsense/mvc/app/views/OPNsense/DSLite
-cp "${SRC}/opnsense/mvc/app/views/OPNsense/DSLite/general.volt" \
-   /usr/local/opnsense/mvc/app/views/OPNsense/DSLite/
-cp "${SRC}/opnsense/mvc/app/views/OPNsense/DSLite/diagnostics.volt" \
-   /usr/local/opnsense/mvc/app/views/OPNsense/DSLite/
-
-# Dashboard widget
-mkdir -p /usr/local/opnsense/www/js/widgets/Metadata
-cp "${SRC}/opnsense/www/js/widgets/DSLite.js" \
-   /usr/local/opnsense/www/js/widgets/
-cp "${SRC}/opnsense/www/js/widgets/Metadata/DSLite.xml" \
-   /usr/local/opnsense/www/js/widgets/Metadata/
-
-# Backend scripts
-mkdir -p /usr/local/opnsense/scripts/OPNsense/dslite
-cp "${SRC}/opnsense/scripts/OPNsense/dslite/"*.sh \
-   /usr/local/opnsense/scripts/OPNsense/dslite/
 chmod +x /usr/local/opnsense/scripts/OPNsense/dslite/*.sh
-
-# Configd actions
-cp "${SRC}/opnsense/service/conf/actions.d/actions_dslite.conf" \
-   /usr/local/opnsense/service/conf/actions.d/
-
-# Plugin registration
-cp "${SRC}/etc/inc/plugins.inc.d/dslite.inc" \
-   /usr/local/etc/inc/plugins.inc.d/
 
 # Restart configd
 echo "Restarting configd..."
