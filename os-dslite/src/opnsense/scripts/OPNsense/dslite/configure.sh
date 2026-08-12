@@ -348,6 +348,29 @@ if [ -n "${OPNSENSE_GW}" ]; then
             logger -t dslite "WARNING: Failed to restore monitor host route ${OPNSENSE_MON}"
         fi
     fi
+
+    # Start the monitor daemon if it is not already probing this gateway.
+    #
+    # At boot OPNsense configures gateway monitoring before the 'vpn' hook builds
+    # the tunnel, so dpinger finds no usable interface for a gateway that lives on
+    # it and skips that gateway entirely -- and nothing revisits the decision once
+    # the tunnel appears. The result is a gateway with correct routes, a working
+    # path and no dpinger at all, which the GUI reports as Offline with "~" for
+    # loss and delay. Failover cannot trigger, exactly as if the gateway had been
+    # disabled.
+    #
+    # Restoring the host route above is not enough on its own: that route is what
+    # keeps the probes pinned to this tunnel, but something has to be probing.
+    OPNSENSE_GW_NAME=$(config_get "${OPNSENSE_GW_XPATH}/name")
+    if [ -n "${OPNSENSE_GW_NAME}" ] &&
+       ! pgrep -qf "dpinger .*-i ${OPNSENSE_GW_NAME} " 2>/dev/null; then
+        if [ -x /usr/local/sbin/pluginctl ]; then
+            logger -t dslite "No dpinger instance for gateway ${OPNSENSE_GW_NAME}; reconfiguring monitors"
+            /usr/local/sbin/pluginctl -c monitor >/dev/null 2>&1 &
+        else
+            logger -t dslite "WARNING: gateway ${OPNSENSE_GW_NAME} has no dpinger instance and pluginctl is missing; failover will NOT trigger"
+        fi
+    fi
 else
     # No enabled gateway is configured for this interface, so OPNsense is not
     # managing the default route and dpinger is not probing anything here. Say so
