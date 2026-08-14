@@ -39,7 +39,8 @@
     var modeFields = {
         'dslite': ['dslite\\.aftr_hostname', 'dslite\\.aftr_address'],
         'fixedip': ['dslite\\.fixedip_interface_id', 'dslite\\.fixedip_aftr', 'dslite\\.fixedip_v4',
-                    'dslite\\.fixedip_update_url', 'dslite\\.fixedip_auth_user', 'dslite\\.fixedip_auth_pass'],
+                    'dslite\\.fixedip_update_url', 'dslite\\.fixedip_auth_user', 'dslite\\.fixedip_auth_pass',
+                    'dslite\\.fixedip_allow_insecure'],
         'mape': ['dslite\\.mape_profile', 'dslite\\.mape_br', 'dslite\\.mape_rule_ipv6',
                  'dslite\\.mape_rule_ipv4', 'dslite\\.mape_ea_length', 'dslite\\.mape_psid_offset']
     };

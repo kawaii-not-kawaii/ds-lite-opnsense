@@ -81,73 +81,73 @@
         <id>dslite.fixedip_interface_id</id>
         <label>Interface ID (IPv6)</label>
         <type>text</type>
-        <help>Your assigned Interface ID in full IPv6 format. Used as the tunnel source address. (Fixed IP mode only)</help>
+        <help>Your assigned Interface ID in full IPv6 format. Used as the tunnel source address.</help>
     </field>
     <field>
         <id>dslite.fixedip_aftr</id>
         <label>AFTR Endpoint (IPv6)</label>
         <type>text</type>
-        <help>Your assigned AFTR endpoint IPv6 address. (Fixed IP mode only)</help>
+        <help>Your assigned AFTR endpoint IPv6 address.</help>
     </field>
     <field>
         <id>dslite.fixedip_v4</id>
         <label>Fixed IPv4 Address</label>
         <type>text</type>
-        <help>Your assigned fixed public IPv4 address. (Fixed IP mode only)</help>
+        <help>Your assigned fixed public IPv4 address.</help>
     </field>
     <field>
         <id>dslite.fixedip_update_url</id>
         <label>Prefix Update URL</label>
         <type>text</type>
-        <help>URL for periodic prefix updates (e.g., https://v6update.asahi-net.or.jp/prefix). (Fixed IP mode only)</help>
+        <help>URL for periodic prefix updates (e.g., https://v6update.asahi-net.or.jp/prefix).</help>
     </field>
     <field>
         <id>dslite.fixedip_auth_user</id>
         <label>Auth User ID</label>
         <type>text</type>
-        <help>Authentication user ID for prefix updates. (Fixed IP mode only)</help>
+        <help>Authentication user ID for prefix updates.</help>
     </field>
     <field>
         <id>dslite.fixedip_auth_pass</id>
         <label>Auth Password</label>
         <type>password</type>
-        <help>Authentication password for prefix updates. (Fixed IP mode only)</help>
+        <help>Authentication password for prefix updates.</help>
     </field>
     <field>
         <id>dslite.mape_profile</id>
         <label>MAP-E Profile</label>
         <type>dropdown</type>
-        <help>Fills in the values that are the same for every subscriber on that service (BR address, PSID offset). The mapping rule below is still per-subscriber. (MAP-E mode only)</help>
+        <help>Fills in the values that are the same for every subscriber on that service (BR address, PSID offset). The mapping rule below is still per-subscriber.</help>
     </field>
     <field>
         <id>dslite.mape_br</id>
         <label>MAP-E BR Address</label>
         <type>text</type>
-        <help>IPv6 address of the Border Relay. Left blank, the profile supplies it. (MAP-E mode only)</help>
+        <help>IPv6 address of the Border Relay. Left blank, the profile supplies it.</help>
     </field>
     <field>
         <id>dslite.mape_rule_ipv6</id>
         <label>MAP-E Rule IPv6 Prefix</label>
         <type>text</type>
-        <help>Rule IPv6 prefix in CIDR form, e.g. 240b:10::/31. Your delegated prefix must fall inside it — if it does not, the tunnel refuses to come up rather than guess a wrong port set. (MAP-E mode only)</help>
+        <help>Rule IPv6 prefix in CIDR form, e.g. 240b:10::/31. Your delegated prefix must fall inside it — if it does not, the tunnel refuses to come up rather than guess a wrong port set.</help>
     </field>
     <field>
         <id>dslite.mape_rule_ipv4</id>
         <label>MAP-E Rule IPv4 Prefix</label>
         <type>text</type>
-        <help>Rule IPv4 prefix in CIDR form, e.g. 106.72.0.0/15. (MAP-E mode only)</help>
+        <help>Rule IPv4 prefix in CIDR form, e.g. 106.72.0.0/15.</help>
     </field>
     <field>
         <id>dslite.mape_ea_length</id>
         <label>MAP-E EA-bits Length</label>
         <type>text</type>
-        <help>Number of Embedded Address bits, e.g. 25. The PSID length is derived as EA length minus (32 - IPv4 prefix length). (MAP-E mode only)</help>
+        <help>Number of Embedded Address bits, e.g. 25. The PSID length is derived as EA length minus (32 - IPv4 prefix length).</help>
     </field>
     <field>
         <id>dslite.mape_psid_offset</id>
         <label>MAP-E PSID Offset</label>
         <type>text</type>
-        <help>PSID offset. RFC 7597 defaults to 6; v6plus uses 4. Left blank, the profile or the RFC default applies. (MAP-E mode only)</help>
+        <help>PSID offset. RFC 7597 defaults to 6; v6plus uses 4. Left blank, the profile or the RFC default applies.</help>
         <advanced>true</advanced>
     </field>
     <field>
