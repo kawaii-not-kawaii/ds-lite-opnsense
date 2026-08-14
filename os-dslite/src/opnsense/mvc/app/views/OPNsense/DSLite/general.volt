@@ -27,15 +27,22 @@
         'custom': { 'hostname': '', 'address': '', 'readonly': false }
     };
 
-    // Fields that belong to each mode.
+    // Fields that belong to each mode, keyed by the value of dslite.mode.
     //
-    // isp_profile is deliberately NOT here: it applies to both modes. In
-    // DS-Lite it selects the AFTR, in Fixed IP it selects how the provider's
-    // Interface ID maps into the CE address. Hiding it under Fixed IP made the
-    // field that decides whether the tunnel passes traffic invisible.
-    var dsliteFields = ['dslite\\.aftr_hostname', 'dslite\\.aftr_address'];
-    var fixedipFields = ['dslite\\.fixedip_interface_id', 'dslite\\.fixedip_aftr', 'dslite\\.fixedip_v4',
-                         'dslite\\.fixedip_update_url', 'dslite\\.fixedip_auth_user', 'dslite\\.fixedip_auth_pass'];
+    // isp_profile is deliberately NOT here: it applies to both DS-Lite and Fixed
+    // IP. In DS-Lite it selects the AFTR, in Fixed IP it selects how the
+    // provider's Interface ID maps into the CE address. Hiding it under Fixed IP
+    // made the field that decides whether the tunnel passes traffic invisible.
+    //
+    // Every mode-specific field must appear here. A field left out is shown in
+    // all three modes, which is how the MAP-E block used to behave.
+    var modeFields = {
+        'dslite': ['dslite\\.aftr_hostname', 'dslite\\.aftr_address'],
+        'fixedip': ['dslite\\.fixedip_interface_id', 'dslite\\.fixedip_aftr', 'dslite\\.fixedip_v4',
+                    'dslite\\.fixedip_update_url', 'dslite\\.fixedip_auth_user', 'dslite\\.fixedip_auth_pass'],
+        'mape': ['dslite\\.mape_profile', 'dslite\\.mape_br', 'dslite\\.mape_rule_ipv6',
+                 'dslite\\.mape_rule_ipv4', 'dslite\\.mape_ea_length', 'dslite\\.mape_psid_offset']
+    };
 
     $( document ).ready(function() {
         var data_get_map = {'frm_general_settings':"/api/dslite/settings/get"};
@@ -51,29 +58,63 @@
             updateModeFields();
         });
 
+        // base_form's "advanced mode" toggle reveals every data-advanced row at
+        // once, including advanced fields belonging to a mode that is not
+        // selected -- mape_psid_offset while in DS-Lite, for instance. Re-apply
+        // the mode filter afterwards. Deferred so the core handler runs first.
+        $(document).on('click', '[id^="show_advanced_formDialog"]', function() {
+            setTimeout(updateModeFields, 0);
+        });
+
         // Update AFTR fields when ISP profile changes
         $('#dslite\\.isp_profile').on('changed.bs.select', function() {
             updateProfileFields();
         });
 
+        // Is "advanced mode" currently on?
+        //
+        // Probed from a row that is advanced but belongs to no mode, so the
+        // answer stays correct whichever mode is selected. Reading the toggle
+        // icon's class instead would couple this to base_form's markup.
+        function advancedShown() {
+            var managed = [];
+            $.each(modeFields, function(mode, fields) {
+                fields.forEach(function(f) { managed.push('#' + f); });
+            });
+            var probe = $('tr[data-advanced="true"]').filter(function() {
+                return $(this).find(managed.join(',')).length === 0;
+            }).first();
+            // No unmanaged advanced row to probe: assume on, so an in-mode
+            // advanced field is shown rather than silently unreachable.
+            return probe.length ? probe.is(':visible') : true;
+        }
+
+        // Show or hide a single field's row.
+        //
+        // An advanced row is never force-shown. Whether advanced fields are
+        // visible is base_form's decision, and calling .show() on one here would
+        // make it appear in basic mode -- which is what happens to
+        // mape_psid_offset if this guard is dropped.
+        function setRowVisible(field, visible) {
+            var row = $('#' + field).closest('tr');
+            if (visible && (row.attr('data-advanced') !== 'true' || advancedShown())) {
+                row.show();
+            } else {
+                row.hide();
+            }
+        }
+
         function updateModeFields() {
             var mode = $('#dslite\\.mode').val();
-            if (mode === 'fixedip') {
-                // Show fixed IP fields, hide DS-Lite profile fields
-                dsliteFields.forEach(function(f) {
-                    $('#' + f).closest('tr').hide();
+            if (!modeFields.hasOwnProperty(mode)) {
+                mode = 'dslite';
+            }
+            $.each(modeFields, function(m, fields) {
+                fields.forEach(function(f) {
+                    setRowVisible(f, m === mode);
                 });
-                fixedipFields.forEach(function(f) {
-                    $('#' + f).closest('tr').show();
-                });
-            } else {
-                // Show DS-Lite fields, hide fixed IP fields
-                dsliteFields.forEach(function(f) {
-                    $('#' + f).closest('tr').show();
-                });
-                fixedipFields.forEach(function(f) {
-                    $('#' + f).closest('tr').hide();
-                });
+            });
+            if (mode === 'dslite') {
                 updateProfileFields();
             }
         }
