@@ -14,11 +14,13 @@ set -e
 # run on a box whose IPv4 does not exist until the tunnel it installs is up,
 # pulling the tarball would fail exactly when it is needed most.
 BRANCH="${DSLITE_BRANCH:-main}"
-BASE_URL="https://raw.githubusercontent.com/kawaii-not-kawaii/ds-lite-opnsense/${BRANCH}/os-dslite/src"
+REPO_BASE="https://raw.githubusercontent.com/kawaii-not-kawaii/ds-lite-opnsense/${BRANCH}/os-dslite"
+BASE_URL="${REPO_BASE}/src"
 TMP_DIR="/tmp/dslite-install"
 
 # Source paths, relative to os-dslite/src. The install destination is always
-# /usr/local/<same relative path>, so one list drives both.
+# /usr/local/<same relative path>, so one list drives both the staged package
+# and the degraded file-copy fallback.
 FILES="
 etc/inc/plugins.inc.d/dslite.inc
 opnsense/mvc/app/controllers/OPNsense/DSLite/GeneralController.php
@@ -79,62 +81,189 @@ fetch_one() {
     return 1
 }
 
-echo "Downloading plugin (${BRANCH})..."
-rm -rf "${TMP_DIR}"
-mkdir -p "${TMP_DIR}"
+# Fetch to ${TMP_DIR}/<rel>, aborting on transport failure or an empty result.
+# A 404 from raw returns the string "404: Not Found" with a success status under
+# some curl versions; catch that rather than installing a stub file.
+fetch_checked() {
+    _rel="$1"
+    _url="$2"
 
-count=0
-for rel in ${FILES}; do
-    mkdir -p "${TMP_DIR}/$(dirname "${rel}")"
-    if ! fetch_one "${BASE_URL}/${rel}" "${TMP_DIR}/${rel}"; then
+    mkdir -p "${TMP_DIR}/$(dirname "${_rel}")"
+    if ! fetch_one "${_url}" "${TMP_DIR}/${_rel}"; then
         echo ""
-        echo "ERROR: failed to download ${rel}"
-        echo "       from ${BASE_URL}/${rel}"
+        echo "ERROR: failed to download ${_rel}"
+        echo "       from ${_url}"
         echo ""
         echo "Check connectivity to raw.githubusercontent.com. Note that"
         echo "github.com itself is IPv4-only, so on an IPv6-only box only the"
         echo "raw.githubusercontent.com host is reachable."
         exit 1
     fi
-    # A 404 from raw returns the string "404: Not Found" with a success status
-    # under some curl versions; catch that rather than installing a stub file.
-    if [ ! -s "${TMP_DIR}/${rel}" ]; then
-        echo "ERROR: ${rel} downloaded empty -- aborting"
+    if [ ! -s "${TMP_DIR}/${_rel}" ]; then
+        echo "ERROR: ${_rel} downloaded empty -- aborting"
         exit 1
     fi
-    count=$((count + 1))
-    printf '\r  %d/%d files' "${count}" "$(echo "${FILES}" | wc -w | tr -d ' ')"
-done
-echo ""
+}
 
-echo "Installing plugin files..."
+echo "Downloading plugin (${BRANCH})..."
+rm -rf "${TMP_DIR}"
+mkdir -p "${TMP_DIR}"
+
+total=$(($(echo "${FILES}" | wc -w | tr -d ' ') + 1))
+count=0
 for rel in ${FILES}; do
-    dst="/usr/local/${rel}"
-    mkdir -p "$(dirname "${dst}")"
-    cp "${TMP_DIR}/${rel}" "${dst}"
+    fetch_checked "src/${rel}" "${BASE_URL}/${rel}"
+    count=$((count + 1))
+    printf '\r  %d/%d files' "${count}" "${total}"
 done
 
-chmod +x /usr/local/opnsense/scripts/OPNsense/dslite/*.sh
+# The package builder travels with the sources. Duplicating its manifest and
+# plist logic here is what let the two paths drift apart before: the packaged
+# install grew the /usr/local/opnsense/version metadata that makes a plugin
+# visible to System > Firmware > Plugins, and this installer did not, so a
+# curl-pipe install stayed invisible and was dropped by the next firmware
+# upgrade without a trace. One builder, one source of truth.
+fetch_checked "tools/build-pkg.sh" "${REPO_BASE}/tools/build-pkg.sh"
+count=$((count + 1))
+printf '\r  %d/%d files\n' "${count}" "${total}"
 
-# Restart configd
-echo "Restarting configd..."
-service configd restart
+# ---------------------------------------------------------------------------
+# Preferred path: build a real FreeBSD package and install it.
+# ---------------------------------------------------------------------------
+install_as_package() {
+    command -v pkg >/dev/null 2>&1 || return 1
+
+    chmod +x "${TMP_DIR}/tools/build-pkg.sh" 2>/dev/null || true
+
+    # git is not present in a curl-pipe install, so build-pkg.sh cannot resolve a
+    # commit hash. Record the branch instead of letting it fall back to
+    # "undefined" -- product_hash is what tells you later which tree a box is
+    # running. A commit SHA is not obtainable here: api.github.com publishes no
+    # AAAA record, so it is unreachable on the IPv6-only box this path exists for.
+    PKG_HASH="branch-${BRANCH}" \
+    OUT_DIR="${TMP_DIR}/dist" \
+    WORK_DIR="${TMP_DIR}/.pkgbuild" \
+        sh "${TMP_DIR}/tools/build-pkg.sh" >"${TMP_DIR}/build.log" 2>&1 || {
+        echo "  package build failed:"
+        sed 's/^/    /' "${TMP_DIR}/build.log" | tail -15
+        return 1
+    }
+
+    _pkgfile=$(find "${TMP_DIR}/dist" -name 'os-dslite-*.pkg' -o -name 'os-dslite-*.txz' 2>/dev/null | head -1)
+    if [ -z "${_pkgfile}" ]; then
+        echo "  package build produced no output"
+        return 1
+    fi
+
+    echo "  built $(basename "${_pkgfile}")"
+
+    # -f so a reinstall of the same version replaces rather than no-ops.
+    if ! pkg add -f "${_pkgfile}" >"${TMP_DIR}/pkgadd.log" 2>&1; then
+        echo "  pkg add failed:"
+        sed 's/^/    /' "${TMP_DIR}/pkgadd.log" | tail -15
+        return 1
+    fi
+
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# Fallback: copy files into place. Used only when the package path fails, so
+# that a box with no working IPv4 can still get its tunnel up. This leaves the
+# plugin unregistered with pkg, which is why it warns loudly at the end.
+# ---------------------------------------------------------------------------
+install_as_files() {
+    for rel in ${FILES}; do
+        dst="/usr/local/${rel}"
+        mkdir -p "$(dirname "${dst}")"
+        cp "${TMP_DIR}/src/${rel}" "${dst}"
+    done
+    chmod +x /usr/local/opnsense/scripts/OPNsense/dslite/*.sh
+
+    # Write the plugin metadata by hand. OPNsense does not discover plugins from
+    # the package database: firmware/register.php globs
+    # /usr/local/opnsense/version/* and parses each file as JSON, keying on
+    # product_id. Without this the plugin is invisible in the GUI. It still
+    # cannot be reinstalled automatically after a firmware upgrade, because no
+    # repository carries the package -- but at least it is visible enough to
+    # notice, rather than disappearing silently.
+    _abi=$(sed -n 's/.*"product_abi": *"\([^"]*\)".*/\1/p' \
+        /usr/local/opnsense/version/core 2>/dev/null | head -1)
+    [ -n "${_abi}" ] || _abi="unknown"
+
+    mkdir -p /usr/local/opnsense/version
+    cat > /usr/local/opnsense/version/dslite <<VERSION
+{
+    "product_abi": "${_abi}",
+    "product_arch": "$(uname -m)",
+    "product_conflicts": "os-dslite-devel",
+    "product_email": "kawaii-not-kawaii@users.noreply.github.com",
+    "product_hash": "branch-${BRANCH}",
+    "product_id": "os-dslite",
+    "product_name": "dslite",
+    "product_tier": "4",
+    "product_version": "$(date +%Y.%m.%d.%H%M)",
+    "product_website": "https://github.com/kawaii-not-kawaii/ds-lite-opnsense"
+}
+VERSION
+}
+
+echo "Installing plugin..."
+PACKAGED=1
+if ! install_as_package; then
+    echo ""
+    echo "  falling back to a file copy"
+    install_as_files
+    PACKAGED=0
+fi
+
+# Restart configd so the new actions_dslite.conf is read. The package
+# post-install already does this, but the fallback path has no hooks.
+if [ "${PACKAGED}" -eq 0 ]; then
+    echo "Restarting configd..."
+    service configd restart
+fi
 
 # Flush caches
 rm -rf /tmp/opnsense_*cache* 2>/dev/null
 
-# Re-register cron. Copying files does not rebuild the crontab -- only a package
-# install runs the post-install hook that reads dslite_cron(). Without this the
+# Re-register cron. Neither a file copy nor pkg's post-install rebuilds the
+# crontab from dslite_cron() -- only a config write does. Without this the
 # */30 prefix-update job never runs, and on a Fixed IP service that means the CE
 # registration goes stale the next time the delegated prefix changes, silently.
 echo "Re-registering cron jobs..."
 configctl cron restart >/dev/null 2>&1 || true
+
+# Register the tunnel interface. dslite_interfaces() runs only from
+# plugins_interfaces(), which fires on a config write -- so after a fresh
+# install the tunnel can come up with no <dslite> entry under <interfaces>,
+# meaning nothing appears in the GUI interface list and no gateway can be
+# attached to it. pluginctl -i performs that registration without waiting for
+# the user to click Save.
+echo "Registering plugin interfaces..."
+pluginctl -i >/dev/null 2>&1 || true
 
 # Cleanup
 rm -rf "${TMP_DIR}"
 
 echo ""
 echo "=== Installation complete! ==="
+echo ""
+
+if [ "${PACKAGED}" -eq 1 ]; then
+    pkg info os-dslite 2>/dev/null | sed -n '1,2p' | sed 's/^/  /'
+else
+    echo "  WARNING: installed by file copy, not as a package."
+    echo ""
+    echo "  pkg has no record of these files, so a firmware upgrade will remove"
+    echo "  the plugin and nothing will reinstall it. Rebuild it as a package"
+    echo "  once the box has working IPv4:"
+    echo ""
+    echo "    git clone https://github.com/kawaii-not-kawaii/ds-lite-opnsense.git"
+    echo "    cd ds-lite-opnsense/os-dslite && ./tools/build-pkg.sh"
+    echo "    pkg add -f dist/os-dslite-*.pkg"
+fi
+
 echo ""
 echo "Next steps:"
 echo "  1. Log out and back into the OPNsense web UI (the menu entry"

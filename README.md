@@ -70,6 +70,11 @@ produces a tunnel that comes up perfectly and passes no traffic — see
 
 ### On OPNsense (IPv6-only safe)
 
+The one-liner below builds a real FreeBSD package from the fetched sources and
+installs it with `pkg`, so the result is identical to the manual package build
+further down. It falls back to a plain file copy only if packaging fails, and
+says so loudly when it does.
+
 **Main branch (DS-Lite + manual Fixed IP):**
 
 ```sh
@@ -90,10 +95,11 @@ cd ds-lite-opnsense/os-dslite         # or os-dslite-hb46pp on the hb46pp branch
 ./deploy.sh <opnsense-ip>
 ```
 
-### Build & install as a package (recommended)
+### Build & install as a package (from a source tree)
 
-Building a real FreeBSD `.pkg` gives you clean upgrades and a proper uninstall via
-`pkg`. On the OPNsense box (or any FreeBSD host with the source tree):
+The same package the installer above builds, but from a checkout you already have.
+Use this when you want to pin a specific commit or build for another box. On the
+OPNsense box (or any FreeBSD host with the source tree):
 
 ```sh
 cd ds-lite-opnsense/os-dslite
