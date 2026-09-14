@@ -4,6 +4,15 @@
 # Works over IPv6-only connections (for pre-tunnel install)
 # Run this directly on the OPNsense box:
 #   curl -6 -skL -o /tmp/install-dslite.sh "https://raw.githubusercontent.com/kawaii-not-kawaii/ds-lite-opnsense/main/os-dslite/install.sh" && sh /tmp/install-dslite.sh
+#
+# Or offline, with no network at all: copy the whole os-dslite directory onto a
+# USB stick, mount it on the box, and run install.sh from there. The script uses
+# the src/ tree sitting next to it and never reaches for the network.
+#   mount -t msdosfs /dev/da0s1 /mnt && sh /mnt/os-dslite/install.sh
+#
+# Set DSLITE_BUILD_ONLY=1 to build the package and stop without installing it.
+# Use that to verify a USB stick on a working box before you rely on it at a
+# site with no network.
 
 set -e
 
@@ -17,6 +26,16 @@ BRANCH="${DSLITE_BRANCH:-main}"
 REPO_BASE="https://raw.githubusercontent.com/kawaii-not-kawaii/ds-lite-opnsense/${BRANCH}/os-dslite"
 BASE_URL="${REPO_BASE}/src"
 TMP_DIR="/tmp/dslite-install"
+
+# Where the sources come from. A src/ tree sitting next to this script is the
+# shape you get by copying the whole os-dslite directory onto a USB stick, so
+# treat that as an explicit request for an offline install: use those files and
+# never touch the network. DSLITE_SRC overrides, for a tree kept elsewhere.
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+SRC_LOCAL="${DSLITE_SRC:-}"
+if [ -z "${SRC_LOCAL}" ] && [ -d "${SCRIPT_DIR}/src/opnsense" ]; then
+    SRC_LOCAL="${SCRIPT_DIR}/src"
+fi
 
 # Source paths, relative to os-dslite/src. The install destination is always
 # /usr/local/<same relative path>, so one list drives both the staged package
@@ -47,7 +66,11 @@ opnsense/www/js/widgets/Metadata/DSLite.xml
 "
 
 echo "=== OPNsense DS-Lite Plugin Installer ==="
-echo "branch: ${BRANCH}"
+if [ -n "${SRC_LOCAL}" ]; then
+    echo "source: ${SRC_LOCAL} (offline)"
+else
+    echo "source: branch ${BRANCH} (network)"
+fi
 echo ""
 
 # Check we're on OPNsense
@@ -105,27 +128,92 @@ fetch_checked() {
     fi
 }
 
-echo "Downloading plugin (${BRANCH})..."
+# The package builder travels with the sources in both modes. Duplicating its
+# manifest and plist logic here is what let the two paths drift apart before:
+# the packaged install grew the /usr/local/opnsense/version metadata that makes
+# a plugin visible to System > Firmware > Plugins, and this installer did not,
+# so a curl-pipe install stayed invisible and was dropped by the next firmware
+# upgrade without a trace. One builder, one source of truth.
+
+stage_from_network() {
+    echo "Downloading plugin (${BRANCH})..."
+
+    total=$(($(echo "${FILES}" | wc -w | tr -d ' ') + 1))
+    count=0
+    for rel in ${FILES}; do
+        fetch_checked "src/${rel}" "${BASE_URL}/${rel}"
+        count=$((count + 1))
+        printf '\r  %d/%d files' "${count}" "${total}"
+    done
+
+    fetch_checked "tools/build-pkg.sh" "${REPO_BASE}/tools/build-pkg.sh"
+    count=$((count + 1))
+    printf '\r  %d/%d files\n' "${count}" "${total}"
+}
+
+stage_from_local() {
+    echo "Staging from ${SRC_LOCAL}..."
+
+    # The builder lives one level up from src/, unless pointed elsewhere.
+    BUILDER="${DSLITE_BUILDER:-${SRC_LOCAL%/src}/tools/build-pkg.sh}"
+
+    # Check the whole tree before copying any of it. A half-populated USB stick
+    # should fail with a list of what is missing, not with a plugin that is
+    # silently short a controller and 500s the moment you open its page.
+    missing=""
+    for rel in ${FILES}; do
+        [ -s "${SRC_LOCAL}/${rel}" ] || missing="${missing} src/${rel}"
+    done
+    [ -s "${BUILDER}" ] || missing="${missing} tools/build-pkg.sh"
+
+    if [ -n "${missing}" ]; then
+        echo ""
+        echo "ERROR: the local source tree is incomplete. Missing:"
+        for m in ${missing}; do echo "         ${m}"; done
+        echo ""
+        echo "       Copy the whole os-dslite directory, not just install.sh."
+        echo "       Expected layout next to this script:"
+        echo "         os-dslite/install.sh"
+        echo "         os-dslite/src/..."
+        echo "         os-dslite/tools/build-pkg.sh"
+        exit 1
+    fi
+
+    count=0
+    for rel in ${FILES}; do
+        mkdir -p "${TMP_DIR}/src/$(dirname "${rel}")"
+        cp "${SRC_LOCAL}/${rel}" "${TMP_DIR}/src/${rel}"
+        count=$((count + 1))
+    done
+    mkdir -p "${TMP_DIR}/tools"
+    cp "${BUILDER}" "${TMP_DIR}/tools/build-pkg.sh"
+    count=$((count + 1))
+    echo "  staged ${count} files"
+}
+
 rm -rf "${TMP_DIR}"
 mkdir -p "${TMP_DIR}"
 
-total=$(($(echo "${FILES}" | wc -w | tr -d ' ') + 1))
-count=0
-for rel in ${FILES}; do
-    fetch_checked "src/${rel}" "${BASE_URL}/${rel}"
-    count=$((count + 1))
-    printf '\r  %d/%d files' "${count}" "${total}"
-done
+if [ -n "${SRC_LOCAL}" ]; then
+    stage_from_local
+else
+    stage_from_network
+fi
 
-# The package builder travels with the sources. Duplicating its manifest and
-# plist logic here is what let the two paths drift apart before: the packaged
-# install grew the /usr/local/opnsense/version metadata that makes a plugin
-# visible to System > Firmware > Plugins, and this installer did not, so a
-# curl-pipe install stayed invisible and was dropped by the next firmware
-# upgrade without a trace. One builder, one source of truth.
-fetch_checked "tools/build-pkg.sh" "${REPO_BASE}/tools/build-pkg.sh"
-count=$((count + 1))
-printf '\r  %d/%d files\n' "${count}" "${total}"
+# What lands in product_hash, which is how you tell later which tree a box is
+# running. Offline from a git checkout we can name the commit exactly; from a
+# plain copy on a USB stick there is nothing to name. Over the network a commit
+# SHA is not obtainable at all, because api.github.com publishes no AAAA record
+# and is unreachable on the IPv6-only box that path exists for.
+if [ -n "${SRC_LOCAL}" ]; then
+    BUILD_HASH="offline"
+    if command -v git >/dev/null 2>&1; then
+        _sha=$(git -C "${SCRIPT_DIR}" rev-parse --short=9 HEAD 2>/dev/null || true)
+        [ -n "${_sha}" ] && BUILD_HASH="${_sha}"
+    fi
+else
+    BUILD_HASH="branch-${BRANCH}"
+fi
 
 # ---------------------------------------------------------------------------
 # Preferred path: build a real FreeBSD package and install it.
@@ -135,12 +223,10 @@ install_as_package() {
 
     chmod +x "${TMP_DIR}/tools/build-pkg.sh" 2>/dev/null || true
 
-    # git is not present in a curl-pipe install, so build-pkg.sh cannot resolve a
-    # commit hash. Record the branch instead of letting it fall back to
-    # "undefined" -- product_hash is what tells you later which tree a box is
-    # running. A commit SHA is not obtainable here: api.github.com publishes no
-    # AAAA record, so it is unreachable on the IPv6-only box this path exists for.
-    PKG_HASH="branch-${BRANCH}" \
+    # build-pkg.sh resolves the hash with git against its own project root, which
+    # is the staging directory here and never a checkout, so pass it explicitly
+    # rather than letting it fall back to "undefined".
+    PKG_HASH="${BUILD_HASH}" \
     OUT_DIR="${TMP_DIR}/dist" \
     WORK_DIR="${TMP_DIR}/.pkgbuild" \
         sh "${TMP_DIR}/tools/build-pkg.sh" >"${TMP_DIR}/build.log" 2>&1 || {
@@ -156,6 +242,23 @@ install_as_package() {
     fi
 
     echo "  built $(basename "${_pkgfile}")"
+
+    # Stop before touching the running system. pkg add's pre-deinstall stops the
+    # tunnel, so this is also the only way to exercise the whole path on a box
+    # whose WAN is currently riding on it.
+    if [ -n "${DSLITE_BUILD_ONLY:-}" ]; then
+        _out="${DSLITE_OUT_DIR:-/tmp}"
+        mkdir -p "${_out}"
+        cp "${_pkgfile}" "${_out}/"
+        echo ""
+        echo "=== Build only: package written, nothing installed ==="
+        echo "  ${_out}/$(basename "${_pkgfile}")"
+        echo ""
+        echo "Install it with:"
+        echo "  pkg add -f ${_out}/$(basename "${_pkgfile}")"
+        rm -rf "${TMP_DIR}"
+        exit 0
+    fi
 
     # -f so a reinstall of the same version replaces rather than no-ops.
     if ! pkg add -f "${_pkgfile}" >"${TMP_DIR}/pkgadd.log" 2>&1; then
@@ -198,7 +301,7 @@ install_as_files() {
     "product_arch": "$(uname -m)",
     "product_conflicts": "os-dslite-devel",
     "product_email": "kawaii-not-kawaii@users.noreply.github.com",
-    "product_hash": "branch-${BRANCH}",
+    "product_hash": "${BUILD_HASH}",
     "product_id": "os-dslite",
     "product_name": "dslite",
     "product_tier": "4",

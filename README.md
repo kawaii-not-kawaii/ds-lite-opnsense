@@ -87,6 +87,42 @@ curl -6 -skL -o /tmp/install-dslite.sh "https://raw.githubusercontent.com/kawaii
 curl -6 -skL -o /tmp/install-dslite.sh "https://raw.githubusercontent.com/kawaii-not-kawaii/ds-lite-opnsense/hb46pp/os-dslite-hb46pp/install.sh" && sh /tmp/install-dslite.sh
 ```
 
+### Offline, from a USB stick
+
+No network needed, including no DNS. Copy the whole `os-dslite` directory onto the
+stick, mount it on the box, and run the same installer from there. It detects the
+`src/` tree next to itself and never reaches for the network.
+
+```sh
+mount -t msdosfs /dev/da0s1 /mnt          # gpart show da0 to find the slice
+sh /mnt/os-dslite/install.sh
+umount /mnt
+```
+
+The stick must carry the whole directory, not just the script:
+
+```
+os-dslite/install.sh
+os-dslite/src/...
+os-dslite/tools/build-pkg.sh
+```
+
+An incomplete copy fails up front with a list of what is missing, rather than
+installing a plugin that is short a file and errors the first time you open its
+page. `DSLITE_SRC=/path/to/src` points at a tree kept somewhere else.
+
+To check a stick before you rely on it, build without installing:
+
+```sh
+DSLITE_BUILD_ONLY=1 sh /mnt/os-dslite/install.sh
+```
+
+That writes the `.pkg` to `/tmp` and touches nothing else, so it is also the safe
+way to exercise the installer on a box whose WAN is currently riding on the tunnel.
+
+Note the package records `product_hash` as `offline` when built from a plain copy.
+Run the installer from a git checkout instead and it records the commit.
+
 ### Remote install via SSH
 
 ```sh
